@@ -10,6 +10,7 @@
 ![Firefox 140+](https://img.shields.io/badge/Firefox-140%2B-FF7139?logo=firefoxbrowser&logoColor=white)
 ![Без зависимостей](https://img.shields.io/badge/зависимости-0-brightgreen)
 [![test](../../actions/workflows/test.yml/badge.svg)](../../actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/Zahar-Seliverstov/sidebar-tabs)](../../releases/latest)
 ![MIT](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
@@ -39,7 +40,7 @@
 Расширение не подписано в addons.mozilla.org, поэтому ставится в
 **Firefox Developer Edition** или **Nightly**:
 
-1. Скачайте `sidebar-tabs.xpi` со страницы [Actions](../../actions) (артефакт последней сборки) или соберите сами: `./build.sh` → `dist/sidebar-tabs.xpi`.
+1. Скачайте `sidebar-tabs.xpi` из [последнего релиза](../../releases/latest) или соберите сами: `./build.sh` → `dist/sidebar-tabs.xpi`.
 2. В `about:config` установите `xpinstall.signatures.required` = `false`.
 3. `about:addons` → ⚙ → «Установить дополнение из файла…» → выберите `.xpi`.
 
