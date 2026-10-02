@@ -21,6 +21,12 @@ const STORAGE_KEY = "lastSession";
 // сохранение форсируется, даже если поток событий не прекращается.
 const SAVE_DEBOUNCE_MS = 400;
 const SAVE_MAX_WAIT_MS = 2000;
+// Запись не удалась (диск, квота) — повтор через столько, не дожидаясь
+// следующего изменения вкладок: оно может и не случиться до краша.
+const SAVE_RETRY_MS = 5000;
+// Подряд неудачных повторов не больше этого: сломалось надолго — дальше
+// сохранение запустит следующее изменение вкладок, а не вечный таймер.
+const SAVE_RETRY_MAX = 5;
 
 const RESTORABLE_SCHEMES = ["http:", "https:", "file:", "ftp:"];
 
@@ -28,6 +34,20 @@ let saveTimer = null;
 let pendingSince = null;
 let lastSavedSerialized = null;
 let isRestoring = false;
+let saveRunning = null;
+let saveAgain = false;
+let saveRetryTimer = null;
+let saveFailures = 0;
+
+// Резервная копия читается сразу при загрузке фона — раньше любой записи.
+// Иначе при старте браузера сохранение «одна новая вкладка» могло успеть
+// затереть копию до того, как onStartup её прочитает и восстановит.
+// Нужна только проверке при старте; если старта не было (фон перезапущен
+// обновлением расширения), через минуту отпускаем — не держим снимок в памяти.
+let startupStored = browser.storage.local.get(STORAGE_KEY).catch(() => null);
+const startupStoredTimer = setTimeout(() => (startupStored = null), 60000);
+// Под node (тесты) таймер не должен держать процесс.
+if (startupStoredTimer && startupStoredTimer.unref) startupStoredTimer.unref();
 
 function isRestorableUrl(url) {
   if (!url) return false;
@@ -133,8 +153,39 @@ async function captureSession() {
   lastSavedSerialized = serialized;
 }
 
+// Сохранения идут строго по одному. Два параллельных снимка могли бы
+// записаться в обратном порядке — и на диске остался бы более старый.
+// Запрос во время записи не теряется: по её окончании снимок снимается заново.
 function runSave() {
-  captureSession().catch((err) => console.error("[sidebar-tabs] save failed", err));
+  if (saveRunning) {
+    saveAgain = true;
+    return saveRunning;
+  }
+  saveRunning = (async () => {
+    try {
+      do {
+        saveAgain = false;
+        try {
+          await captureSession();
+          saveFailures = 0;
+        } catch (err) {
+          console.error("[sidebar-tabs] save failed", err);
+          if (++saveFailures <= SAVE_RETRY_MAX) scheduleSaveRetry();
+        }
+      } while (saveAgain);
+    } finally {
+      saveRunning = null;
+    }
+  })();
+  return saveRunning;
+}
+
+function scheduleSaveRetry() {
+  if (saveRetryTimer) return;
+  saveRetryTimer = setTimeout(() => {
+    saveRetryTimer = null;
+    runSave();
+  }, SAVE_RETRY_MS);
 }
 
 function scheduleSave() {
@@ -392,14 +443,19 @@ async function setTabVolume(tabId, volume) {
   return injectVolume(tabId, v);
 }
 
-browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (!tabVolumes.has(tabId)) return;
-  // Перезагрузка/переход сбрасывают песочницу страницы, а "audible" ловит
-  // плееры во фреймах, появившихся уже после загрузки.
-  if (changeInfo.status === "complete" || changeInfo.audible === true) {
-    injectVolume(tabId, tabVolumes.get(tabId));
-  }
-});
+// Фильтр properties: фон не просыпается на каждую смену заголовка
+// (у некоторых сайтов он тикает постоянно) — нужны только эти поля.
+browser.tabs.onUpdated.addListener(
+  (tabId, changeInfo) => {
+    if (!tabVolumes.has(tabId)) return;
+    // Перезагрузка/переход сбрасывают песочницу страницы, а "audible" ловит
+    // плееры во фреймах, появившихся уже после загрузки.
+    if (changeInfo.status === "complete" || changeInfo.audible === true) {
+      injectVolume(tabId, tabVolumes.get(tabId));
+    }
+  },
+  { properties: ["status", "audible"] }
+);
 browser.tabs.onRemoved.addListener((tabId) => tabVolumes.delete(tabId));
 browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   if (!tabVolumes.has(removedTabId)) return;
@@ -437,6 +493,8 @@ const MEDIA_TEXT_MAX = 300;
 const MEDIA_ART_MAX = 64 * 1024;
 const MEDIA_ACTIONS = ["play", "pause", "previoustrack", "nexttrack", "seekto", "seekbackward", "seekforward", "stop"];
 const MEDIA_BROADCAST_MS = 50;
+const MEDIA_DRIFT_S = 1.5;
+const MEDIA_VISIBLE_KEYS = ["windowId", "title", "artist", "album", "artwork", "playing", "pageMuted", "canPlay", "canSeek", "late", "live"];
 const MEDIA_STALE_MS = 25000;
 const MEDIA_DEAD_MS = 90000;
 // Ответ на команду content-скрипт шлёт, дождавшись реакции сайта (до 1,5 с).
@@ -520,8 +578,30 @@ function applyMediaState(tab, frameId, state) {
   entry.playedAt = entry.playing ? Date.now() : prev ? prev.playedAt : 0;
   entry.seenAt = Date.now();
   mediaSessions.set(key, entry);
-  scheduleMediaBroadcast();
+  if (mediaChanged(prev, entry)) scheduleMediaBroadcast();
   scheduleMediaSweep();
+}
+
+// Позиция, до которой панель сама досчитала бы от прошлого состояния.
+function expectedPosition(p, playing, now) {
+  return playing ? p.position + ((now - p.at) / 1000) * p.rate : p.position;
+}
+
+// Изменилось ли то, что видно в панели. Подтверждения «жив» от фрейма
+// (раз в 10 с, с обложкой до 64 КБ) иначе будили бы все открытые панели.
+// Позицию панель досчитывает сама — рассылаем, только если она разошлась
+// с ожидаемой больше чем на MEDIA_DRIFT_S (перемотка, буферизация).
+function mediaChanged(prev, next) {
+  if (!prev || (prev.playedAt > 0) !== (next.playedAt > 0)) return true;
+  for (const k of MEDIA_VISIBLE_KEYS) {
+    if (prev[k] !== next[k]) return true;
+  }
+  if (prev.actions.join() !== next.actions.join()) return true;
+  const a = prev.position;
+  const b = next.position;
+  if (!a || !b) return a !== b;
+  if (a.duration !== b.duration || a.rate !== b.rate) return true;
+  return Math.abs(expectedPosition(a, prev.playing, b.at) - b.position) > MEDIA_DRIFT_S;
 }
 
 function onMediaMessage(msg, sender) {
@@ -713,17 +793,20 @@ function noteAudible(tab) {
 
 browser.tabs.onRemoved.addListener(forgetMediaOfTab);
 browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => forgetMediaOfTab(removedTabId));
-browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.discarded === true) {
-    forgetMediaOfTab(tabId);
-    return;
-  }
-  if (changeInfo.audible !== undefined) {
-    noteAudible(tab);
-    // Звук появился или пропал — сверяемся со скриптами вкладки.
-    verifyMedia(tabId);
-  }
-});
+browser.tabs.onUpdated.addListener(
+  (tabId, changeInfo, tab) => {
+    if (changeInfo.discarded === true) {
+      forgetMediaOfTab(tabId);
+      return;
+    }
+    if (changeInfo.audible !== undefined) {
+      noteAudible(tab);
+      // Звук появился или пропал — сверяемся со скриптами вкладки.
+      verifyMedia(tabId);
+    }
+  },
+  { properties: ["discarded", "audible"] }
+);
 
 // Вкладки, которые уже звучат на момент запуска фона.
 browser.tabs
@@ -930,8 +1013,10 @@ async function restoreSession(session, initialWindow) {
 // восстановления, восстановление ощущается быстрее.
 async function checkAndRestoreOnStartup() {
   try {
+    const early = startupStored;
+    startupStored = null;
     const [stored, windows] = await Promise.all([
-      browser.storage.local.get(STORAGE_KEY),
+      (early && (await early)) || browser.storage.local.get(STORAGE_KEY),
       browser.windows.getAll({ populate: true }),
     ]);
 
@@ -1005,6 +1090,9 @@ if (typeof module !== "undefined" && module.exports) {
     _getFavicons: () => favicons,
     _getIsRestoring: () => isRestoring,
     _getLastSavedSerialized: () => lastSavedSerialized,
+    SAVE_RETRY_MS,
+    SAVE_RETRY_MAX,
+    mediaChanged,
     _resetState: () => {
       isRestoring = false;
       lastSavedSerialized = null;
@@ -1031,6 +1119,14 @@ if (typeof module !== "undefined" && module.exports) {
         clearTimeout(saveTimer);
         saveTimer = null;
       }
+      if (saveRetryTimer) {
+        clearTimeout(saveRetryTimer);
+        saveRetryTimer = null;
+      }
+      saveRunning = null;
+      saveAgain = false;
+      saveFailures = 0;
+      startupStored = null;
     },
   };
 }

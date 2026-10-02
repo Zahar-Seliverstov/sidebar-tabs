@@ -97,8 +97,8 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 38px;
-  padding: 0 5px 0 9px;
+  height: 34px;
+  padding: 0 5px 0 8px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -107,64 +107,46 @@ button {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  line-height: 1.15;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
 #tb-total {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 #tb-loaded {
-  font-size: 10px;
+  font-size: 9.5px;
   color: var(--dim);
 }
 
-/* Узкая панель: сначала уходит сводка (счётчики есть на кнопках),
-   совсем узкая — подписи, остаются значок и счётчик. */
-@container (width < 275px) {
+/* Совсем узкая панель: сводка уходит, счётчики есть на кнопках. */
+@container (width < 140px) {
   #tb-info {
     display: none;
   }
 }
 
-@container (width < 190px) {
-  .tb-label {
-    display: none;
-  }
-}
-
-/* Кнопки делят оставшуюся ширину. */
+/* Кнопки — значок со счётчиком в обводке, прижаты вправо. */
 .tb-actions {
-  flex: 1;
-  min-width: 0;
+  margin-left: auto;
   display: flex;
   gap: 4px;
-}
-
-.tb-actions .tb-btn {
-  flex: 1 1 auto;
-  min-width: 0;
-  justify-content: center;
-}
-
-.tb-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .tb-btn {
   flex: none;
-  height: 24px;
+  min-width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
-  padding: 0 5px 0 6px;
+  padding: 0 6px;
   border-radius: 7px;
-  background: var(--surface);
+  background: transparent;
   box-shadow: inset 0 0 0 1px var(--border);
   color: var(--fg);
   font-size: 11px;
@@ -185,12 +167,12 @@ button {
 .tb-btn:disabled {
   opacity: 0.4;
   cursor: default;
-  background: var(--surface);
+  background: transparent;
 }
 
 .tb-btn[data-icon]::before {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   color: var(--dim);
   transition: color 0.15s;
 }
@@ -211,12 +193,12 @@ button {
 
 /* Сколько вкладок затронет кнопка. */
 .tb-count {
-  min-width: 15px;
-  padding: 1px 4px;
+  min-width: 16px;
+  padding: 1px 5px;
   border-radius: 999px;
   background: var(--press);
   color: var(--dim);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -361,6 +343,7 @@ button {
 .tab.in-group.active::before {
   background: var(--gc, var(--c-grey));
 }
+
 
 .fav {
   width: 16px;
@@ -589,6 +572,35 @@ button {
   font-variant-numeric: tabular-nums;
   color: var(--dim);
   background: var(--hover);
+}
+
+/* Плюсик «новая вкладка в группе» — как крестик у вкладки: виден при наведении. */
+.gadd {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: -3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.12s, background-color 0.12s, color 0.12s;
+}
+
+.gadd[data-icon]::before {
+  width: 13px;
+  height: 13px;
+}
+
+.group:hover .gadd {
+  opacity: 1;
+}
+
+.gadd:hover {
+  background: var(--press);
+  color: var(--fg);
 }
 
 .rename {

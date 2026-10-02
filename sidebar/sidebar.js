@@ -18,6 +18,9 @@
  */
 
 const RESYNC_DELAY_MS = 16;
+// Запрос вкладок не удался — повтор через столько (иначе список так и
+// остался бы устаревшим до следующего события вкладок).
+const RESYNC_RETRY_MS = 500;
 const MIME = "application/x-sidebar-tabs-tabs";
 // Абсолютный URL: onIconError сравнивает его с img.src, который браузер
 // всегда разворачивает в абсолютный, — с относительным путём сравнение не
@@ -97,6 +100,7 @@ async function resync() {
     } while (resyncAgain);
   } catch (err) {
     report(err);
+    setTimeout(scheduleResync, RESYNC_RETRY_MS);
   } finally {
     resyncRunning = false;
   }
@@ -533,8 +537,12 @@ function makeGroup(key) {
   title.className = "gtitle";
   const count = document.createElement("span");
   count.className = "count";
+  const add = document.createElement("span");
+  add.className = "gadd";
+  add.title = "Новая вкладка в группе";
+  add.dataset.icon = "plus";
 
-  el.append(chev, title, count);
+  el.append(chev, title, count, add);
   return el;
 }
 
@@ -645,6 +653,8 @@ async function newTabInGroup(gid) {
   const last = members[members.length - 1];
   const tab = await newTab(last ? { index: last.index + 1 } : {});
   await browser.tabs.group({ tabIds: [tab.id], groupId: gid });
+  // В свёрнутой группе новая активная вкладка была бы не видна.
+  if (state.groups.get(gid)?.collapsed) await browser.tabGroups.update(gid, { collapsed: false });
 }
 
 function toggleCollapsed(gid) {
@@ -1562,14 +1572,14 @@ function listenMedia() {
 // Сводка (сколько вкладок и сколько из них в памяти) и две массовые кнопки:
 // выгрузить из памяти все вкладки окна и закрыть все вкладки вне групп.
 // Выгрузка безопасна и срабатывает сразу; закрытие — со вторым нажатием:
-// кнопка краснеет, «Закрыть» сменяется на «Точно?» и ждёт 3 секунды.
+// кнопка краснеет и ждёт 3 секунды. Подписей у кнопок нет — только значок,
+// счётчик и подсказка.
 
 const CONFIRM_MS = 3000;
 const $tbTotal = document.getElementById("tb-total");
 const $tbLoaded = document.getElementById("tb-loaded");
 const $tbDiscard = document.getElementById("tb-discard");
 const $tbClose = document.getElementById("tb-close-loose");
-const $tbCloseLabel = $tbClose.querySelector(".tb-label");
 let closeConfirmTimer = 0;
 
 // Что можно выгрузить: не активная (её Firefox не выгружает), не уже
@@ -1615,7 +1625,6 @@ function setCount(btn, n) {
 function resetCloseConfirm() {
   clearTimeout(closeConfirmTimer);
   $tbClose.classList.remove("confirm");
-  $tbCloseLabel.textContent = "Закрыть";
 }
 
 function onToolbarClick(e) {
@@ -1627,7 +1636,6 @@ function onToolbarClick(e) {
     if (!btn.classList.contains("confirm")) {
       btn.classList.add("confirm");
       btn.title = "Нажмите ещё раз, чтобы закрыть";
-      $tbCloseLabel.textContent = "Точно?";
       renderToolbar();
       closeConfirmTimer = setTimeout(() => {
         resetCloseConfirm();
@@ -1679,7 +1687,8 @@ document.addEventListener("click", (e) => {
     // по имени сворачивает с короткой паузой (второй клик её отменяет);
     // по остальному заголовку — сразу.
     clearTimeout(collapseTimer);
-    if (!e.target.closest(".gtitle")) toggleCollapsed(gid);
+    if (e.target.classList.contains("gadd")) run(newTabInGroup(gid));
+    else if (!e.target.closest(".gtitle")) toggleCollapsed(gid);
     else if (e.detail === 1) collapseTimer = setTimeout(() => toggleCollapsed(gid), DBLCLICK_WAIT_MS);
     return;
   }

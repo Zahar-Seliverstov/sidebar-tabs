@@ -108,7 +108,8 @@ test("checkAndRestoreOnStartup: не падает и не логирует во�
   browser.__windowsGetAllImpl = async () => {
     throw new Error("недоступно");
   };
-  const { checkAndRestoreOnStartup } = loadBackground(browser);
+  const bg = loadBackground(browser);
 
-  await assert.doesNotReject(() => checkAndRestoreOnStartup());
+  await assert.doesNotReject(() => bg.checkAndRestoreOnStartup());
+  bg._resetState(); // снять таймер повтора сохранения
 });
