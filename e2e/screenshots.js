@@ -144,6 +144,9 @@ function prepare(origin, dark) {
   delete manifest.sidebar_action.open_at_install;
   fs.writeFileSync(path.join(ext, "manifest.json"), JSON.stringify(manifest, null, 2));
   fs.appendFileSync(path.join(ext, "sidebar", "sidebar.css"), `\nhtml { width: ${PANEL.width}px !important; height: ${PANEL.height}px !important; overflow: hidden; }\n`);
+  // Наведение на первую группу: в README виден «+» (новая вкладка в группе),
+  // который иначе появляется только под курсором.
+  fs.appendFileSync(path.join(ext, "sidebar", "sidebar.css"), "\n#rows > .group:first-child { background: var(--hover); }\n#rows > .group:first-child .gadd { opacity: 1; }\n");
   const sidebarJs = path.join(ext, "sidebar", "sidebar.js");
   const src = fs.readFileSync(sidebarJs, "utf8");
   if (!src.includes("browser.windows.getCurrent()")) throw new Error("в sidebar.js нет windows.getCurrent()");

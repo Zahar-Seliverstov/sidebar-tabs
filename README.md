@@ -17,8 +17,8 @@
 
 <table>
   <tr>
-    <td><img src="docs/panel-light.png" width="320" alt="Панель в светлой теме: группы вкладок и плеер"></td>
-    <td><img src="docs/panel-dark.png" width="320" alt="Панель в тёмной теме: группы вкладок и плеер"></td>
+    <td><img src="docs/panel-light.png?v=5.11.0" width="320" alt="Панель в светлой теме: группы вкладок и плеер"></td>
+    <td><img src="docs/panel-dark.png?v=5.11.0" width="320" alt="Панель в тёмной теме: группы вкладок и плеер"></td>
   </tr>
   <tr>
     <td align="center"><sub>Светлая тема</sub></td>
@@ -44,7 +44,7 @@
 - Работает с сайтами через Media Session API и с обычными `<audio>`/`<video>`.
 
 <p align="center">
-  <img src="docs/menu-dark.png" width="320" alt="Контекстное меню вкладки: группы, звук, громкость, закрепление, выгрузка из памяти">
+  <img src="docs/menu-dark.png?v=5.11.0" width="320" alt="Контекстное меню вкладки: группы, звук, громкость, закрепление, выгрузка из памяти">
   <br><sub>Всё под рукой в контекстном меню: группы, звук, громкость, закрепление, выгрузка из памяти</sub>
 </p>
 
