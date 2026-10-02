@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="tone.js"></script>
+<script>
+"use strict";
+// Демо-страница для скриншотов (e2e/screenshots.js): заголовок, значок и,
+// по желанию, плеер. Параметры: title, icon=цвет, letter, glyph,
+// play=1 — плеер с Media Session (track, artist, art=цвет1,цвет2, dur, pos, paused=1,
+// delay=мс до старта: последний запущенный плеер панель ставит в центр).
+const q = new URLSearchParams(location.search);
+document.title = q.get("title") || "Страница";
+
+function icon() {
+  const c = q.get("icon") || "#888";
+  const letter = q.get("letter") || document.title[0];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="${c}"/>` +
+    `<text x="16" y="22.5" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700" fill="#fff" text-anchor="middle">${letter}</text></svg>`;
+  const link = document.createElement("link");
+  link.rel = "icon";
+  link.href = "data:image/svg+xml," + encodeURIComponent(svg);
+  document.head.append(link);
+}
+icon();
+
+function art() {
+  const [a, b] = (q.get("art") || "#6d5dfc,#ff6b9a").split(",");
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 96;
+  const g = cv.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, 96, 96);
+  grad.addColorStop(0, a);
+  grad.addColorStop(1, b);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 96, 96);
+  g.globalAlpha = 0.35;
+  g.fillStyle = "#fff";
+  g.beginPath();
+  g.arc(70, 26, 34, 0, Math.PI * 2);
+  g.fill();
+  g.globalAlpha = 0.9;
+  g.font = "bold 40px Inter, Arial, sans-serif";
+  g.textAlign = "center";
+  g.fillText(q.get("glyph") || "♪", 48, 64);
+  return cv.toDataURL("image/png");
+}
+
+if (q.get("play") === "1") {
+  const dur = Number(q.get("dur") || 200);
+  const el = new Audio(toneUrl(dur, 220));
+  el.loop = true;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: q.get("track") || document.title,
+    artist: q.get("artist") || "",
+    artwork: [{ src: art(), sizes: "96x96", type: "image/png" }],
+  });
+  navigator.mediaSession.setActionHandler("play", () => el.play());
+  navigator.mediaSession.setActionHandler("pause", () => el.pause());
+  navigator.mediaSession.setActionHandler("previoustrack", () => {});
+  navigator.mediaSession.setActionHandler("nexttrack", () => {});
+  navigator.mediaSession.setActionHandler("seekto", (d) => (el.currentTime = d.seekTime));
+  el.addEventListener("loadedmetadata", () => (el.currentTime = Number(q.get("pos") || 0)), { once: true });
+  setInterval(() => el.currentTime, 500);
+  setTimeout(() => {
+    el.play().then(() => {
+      if (q.get("paused") === "1") setTimeout(() => el.pause(), 900);
+    });
+  }, Number(q.get("delay") || 0));
+}
+</script>

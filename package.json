@@ -6,6 +6,7 @@
   "scripts": {
     "build": "./build.sh",
     "test": "node --test \"test/*.test.js\"",
-    "e2e": "node e2e/run.js"
+    "e2e": "node e2e/run.js",
+    "screenshots": "node e2e/screenshots.js"
   }
 }

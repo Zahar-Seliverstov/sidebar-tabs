@@ -13,6 +13,19 @@
 [![release](https://img.shields.io/github/v/release/Zahar-Seliverstov/sidebar-tabs)](../../releases/latest)
 ![MIT](https://img.shields.io/badge/license-MIT-blue)
 
+<br>
+
+<table>
+  <tr>
+    <td><img src="docs/panel-light.png" width="320" alt="Панель в светлой теме: группы вкладок и плеер"></td>
+    <td><img src="docs/panel-dark.png" width="320" alt="Панель в тёмной теме: группы вкладок и плеер"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Светлая тема</sub></td>
+    <td align="center"><sub>Тёмная тема — цвета берутся из системы и темы Firefox</sub></td>
+  </tr>
+</table>
+
 </div>
 
 ## Возможности
@@ -29,6 +42,11 @@
 - Громкость для каждой вкладки отдельно: клик по динамику — выключить звук, наведение — ползунок, колесо — ±5 %.
 - Плеер внизу панели для всех играющих вкладок: обложка, название, пауза, предыдущий/следующий трек, перемотка ±10 с, полоса позиции.
 - Работает с сайтами через Media Session API и с обычными `<audio>`/`<video>`.
+
+<p align="center">
+  <img src="docs/menu-dark.png" width="320" alt="Контекстное меню вкладки: группы, звук, громкость, закрепление, выгрузка из памяти">
+  <br><sub>Всё под рукой в контекстном меню: группы, звук, громкость, закрепление, выгрузка из памяти</sub>
+</p>
 
 **Автосохранение**
 - Открытые окна, вкладки и группы сохраняются в фоне при каждом изменении (не чаще раза в 400 мс и не реже раза в 2 с).
@@ -57,13 +75,15 @@ content/media.js     — перехват медиа на страницах (Me
 sidebar/             — интерфейс боковой панели (model.js — чистая логика, sidebar.js — DOM)
 icons/               — иконка расширения и иконки Lucide
 test/                — модульные тесты (node:test) с фейковым browser.* API
-e2e/                 — сквозные тесты плеера в настоящем Firefox
+e2e/                 — сквозные тесты плеера в настоящем Firefox и съёмка скриншотов
+docs/                — скриншоты для README
 ```
 
 ```sh
 npm test        # модульные тесты, нужен Node.js 22+
 npm run e2e     # сквозные тесты, нужен Firefox Developer Edition (FIREFOX=/путь/к/firefox)
 ./build.sh      # собрать dist/sidebar-tabs.xpi
+npm run screenshots  # переснять docs/*.png (Firefox Developer Edition)
 ```
 
 ## Лицензия
