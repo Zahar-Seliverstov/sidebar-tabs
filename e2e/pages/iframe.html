@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Плеер в пустом фрейме</title>
+<script src="tone.js"></script>
+<iframe id="f"></iframe>
+<script>
+"use strict";
+// Плеер создаётся внутри about:blank-фрейма (так делают встраиваемые плееры).
+const doc = document.getElementById("f").contentDocument;
+const el = doc.createElement("audio");
+doc.body.append(el);
+el.src = toneUrl(120, 500);
+el.play().then(() => pageLog("iframe playing"), (e) => pageLog("iframe play failed " + e));
+window.api = { pause: () => el.pause() };
+</script>

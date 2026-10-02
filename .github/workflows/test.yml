@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - run: npm test
+      - run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-tabs.xpi
+          path: dist/sidebar-tabs.xpi

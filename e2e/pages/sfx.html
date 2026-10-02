@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Звуки интерфейса</title>
+<script src="tone.js"></script>
+<script>
+"use strict";
+// Короткие звуки (уведомления): плеер их показывать не должен.
+setInterval(() => new Audio(toneUrl(0.3, 880)).play().catch(() => {}), 700);
+</script>

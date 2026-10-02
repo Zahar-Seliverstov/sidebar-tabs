@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Вкладки</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div id="toolbar">
+    <span id="tb-info"><b id="tb-total"></b><span id="tb-loaded"></span></span>
+    <div class="tb-actions">
+      <button id="tb-discard" class="tb-btn" type="button" data-icon="moon"><span class="tb-label">Выгрузить</span><span class="tb-count"></span></button>
+      <button id="tb-close-loose" class="tb-btn danger" type="button" data-icon="trash-2"><span class="tb-label">Закрыть</span><span class="tb-count"></span></button>
+    </div>
+  </div>
+  <div id="pinned" hidden></div>
+  <div id="scroll">
+    <div id="rows"></div>
+    <button id="new-tab" type="button" title="Новая вкладка (или двойной клик по пустому месту)">
+      <span class="plus" data-icon="plus"></span><span>Новая вкладка</span>
+    </button>
+    <div id="filler"></div>
+  </div>
+
+  <section id="player" hidden>
+    <div id="player-bg" aria-hidden="true"></div>
+    <div id="player-list"></div>
+    <div id="deck">
+      <div id="deck-seek">
+        <span id="deck-pos" class="deck-time"></span>
+        <div id="deck-bar" tabindex="0" role="slider" aria-label="Позиция трека">
+          <div id="deck-fill"></div>
+          <div id="deck-thumb"></div>
+          <span id="deck-tip" hidden></span>
+        </div>
+        <span id="deck-dur" class="deck-time"></span>
+        <span id="deck-live">Эфир</span>
+      </div>
+      <div id="deck-note" role="status" hidden>
+        <span id="deck-note-text"></span>
+        <button id="deck-reload" type="button" data-act="reload" hidden>Перезагрузить</button>
+      </div>
+      <div id="deck-ctl">
+        <button class="dk-btn dk-skip" type="button" data-act="back" data-icon="rotate-ccw" title="Назад на 10 секунд"><span>10</span></button>
+        <button class="dk-btn" type="button" data-act="previoustrack" data-icon="skip-back-fill" title="Предыдущий трек"></button>
+        <button class="dk-btn dk-play" type="button" data-act="toggle" data-icon="play-fill"></button>
+        <button class="dk-btn" type="button" data-act="nexttrack" data-icon="skip-forward-fill" title="Следующий трек"></button>
+        <button class="dk-btn dk-skip" type="button" data-act="forward" data-icon="rotate-cw" title="Вперёд на 10 секунд"><span>10</span></button>
+      </div>
+    </div>
+  </section>
+
+  <div id="menu" role="menu" hidden></div>
+  <div id="drag-image" aria-hidden="true"></div>
+  <script src="vendor/motion.js"></script>
+  <script src="model.js"></script>
+  <script src="sidebar.js"></script>
+</body>
+</html>

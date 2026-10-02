@@ -1,0 +1,1489 @@
+/* Панель вкладок.
+   Цвета: базовые берутся из системной темы (на Linux — из GTK, ровно те же,
+   что у интерфейса Firefox), поверх них — из темы Firefox, если она их задаёт
+   (applyTheme в sidebar.js). Все остальные оттенки выводятся из базовых через
+   color-mix, поэтому подходят к любой теме.
+   Анимации — только transform/opacity/цвет: их считает компоновщик, на
+   скорость списка они не влияют; при prefers-reduced-motion отключаются. */
+
+:root {
+  color-scheme: light dark;
+  --bg: Canvas;
+  --fg: CanvasText;
+  --accent: AccentColor;
+  --on-accent: AccentColorText;
+  --menu-bg: color-mix(in srgb, var(--fg) 7%, var(--bg));
+  --menu-fg: var(--fg);
+  --border: color-mix(in srgb, var(--fg) 11%, transparent);
+
+  --surface: color-mix(in srgb, var(--fg) 5%, var(--bg));
+  --raised: color-mix(in srgb, var(--fg) 12%, var(--bg));
+  --hover: color-mix(in srgb, var(--fg) 7%, transparent);
+  --press: color-mix(in srgb, var(--fg) 12%, transparent);
+  --dim: color-mix(in srgb, var(--fg) 62%, var(--bg));
+  --faint: color-mix(in srgb, var(--fg) 38%, var(--bg));
+  --selected: color-mix(in srgb, var(--accent) 22%, transparent);
+  --track: color-mix(in srgb, var(--fg) 16%, transparent);
+
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.22), 0 0 0 1px color-mix(in srgb, var(--fg) 5%, transparent);
+  --pop-shadow: 0 10px 30px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border);
+  --radius: 6px;
+  --row-h: 24px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --c-grey: #9e9ea8;
+  --c-blue: #4f9bff;
+  --c-purple: #b07cff;
+  --c-cyan: #2fc4d6;
+  --c-green: #45c27a;
+  --c-yellow: #e7b416;
+  --c-orange: #ff8a3d;
+  --c-red: #ff5c5c;
+  --c-pink: #f56ec4;
+}
+
+/* Цвета окна системной темы (GTK на Linux) — точно как у самого Firefox. */
+@supports (color: -moz-dialog) {
+  :root {
+    --bg: -moz-dialog;
+    --fg: -moz-dialogtext;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12.5px/1.2 system-ui, sans-serif;
+  user-select: none;
+  overflow: hidden;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ---------- панель сверху ---------- */
+
+#toolbar {
+  flex: none;
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 5px 0 9px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Сводка в две строчки: сколько вкладок и сколько из них в памяти. */
+#tb-info {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+#tb-total {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+#tb-loaded {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+/* Узкая панель: сначала уходит сводка (счётчики есть на кнопках),
+   совсем узкая — подписи, остаются значок и счётчик. */
+@container (width < 275px) {
+  #tb-info {
+    display: none;
+  }
+}
+
+@container (width < 190px) {
+  .tb-label {
+    display: none;
+  }
+}
+
+/* Кнопки делят оставшуюся ширину. */
+.tb-actions {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+}
+
+.tb-actions .tb-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+
+.tb-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tb-btn {
+  flex: none;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px 0 6px;
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, box-shadow 0.15s, transform 0.1s var(--ease);
+}
+
+.tb-btn:hover {
+  background: var(--raised);
+}
+
+.tb-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.tb-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--surface);
+}
+
+.tb-btn[data-icon]::before {
+  width: 13px;
+  height: 13px;
+  color: var(--dim);
+  transition: color 0.15s;
+}
+
+.tb-btn:not(:disabled):hover[data-icon]::before {
+  color: var(--accent);
+}
+
+.tb-btn.danger:not(:disabled):hover {
+  color: var(--c-red);
+  background: color-mix(in srgb, var(--c-red) 12%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-red) 35%, transparent);
+}
+
+.tb-btn.danger:not(:disabled):hover[data-icon]::before {
+  color: var(--c-red);
+}
+
+/* Сколько вкладок затронет кнопка. */
+.tb-count {
+  min-width: 15px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--press);
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb-count:empty {
+  display: none;
+}
+
+.tb-btn.confirm,
+.tb-btn.confirm:hover {
+  color: #fff;
+  background: var(--c-red);
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--c-red) 45%, transparent);
+  animation: pulse-confirm 1s var(--ease) infinite alternate;
+}
+
+.tb-btn.confirm[data-icon]::before,
+.tb-btn.confirm:hover[data-icon]::before {
+  color: #fff;
+}
+
+.tb-btn.confirm .tb-count {
+  background: rgb(255 255 255 / 0.25);
+  color: #fff;
+}
+
+@keyframes pulse-confirm {
+  to {
+    box-shadow: 0 1px 12px color-mix(in srgb, var(--c-red) 70%, transparent);
+  }
+}
+
+/* ---------- закреплённые вкладки: плитки ---------- */
+
+#pinned {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
+  gap: 3px;
+  padding: 5px 5px 4px;
+  flex: none;
+}
+
+#pinned[hidden] {
+  display: none;
+}
+
+.pin {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--surface);
+  transition: background-color 0.12s, box-shadow 0.12s;
+}
+
+.pin:hover {
+  background: var(--raised);
+}
+
+.pin.active {
+  background: var(--raised);
+  box-shadow: var(--shadow), inset 0 -2px 0 var(--accent);
+}
+
+.pin.selected {
+  background: var(--selected);
+}
+
+/* ---------- список ---------- */
+
+#scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg) 22%, transparent) transparent;
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0;
+}
+
+#rows,
+#pinned {
+  position: relative;
+}
+
+/* Уходящая строка (FLIP): уже не в раскладке, только гаснет. */
+.leaving {
+  pointer-events: none;
+  z-index: 0;
+}
+
+#filler {
+  flex: 1;
+  min-height: 24px;
+}
+
+.tab {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 3px 0 7px;
+  margin: 1px 4px;
+  border-radius: var(--radius);
+  position: relative;
+  transition: background-color 0.12s, box-shadow 0.12s;
+}
+
+.tab:hover {
+  background: var(--hover);
+}
+
+.tab.active {
+  background: var(--raised);
+  box-shadow: var(--shadow);
+}
+
+.tab.selected {
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Вкладки группы: отступ и цветная линия группы слева. */
+.tab.in-group {
+  margin-left: 13px;
+}
+
+.tab.in-group::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--gc, var(--c-grey)) 70%, transparent);
+}
+
+.tab.in-group.active::before {
+  background: var(--gc, var(--c-grey));
+}
+
+.fav {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  transition: opacity 0.15s, filter 0.15s;
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab.active .title {
+  font-weight: 600;
+}
+
+.tab.discarded .title {
+  color: var(--dim);
+}
+
+.discarded .fav {
+  opacity: 0.55;
+  filter: grayscale(0.5);
+}
+
+.loading .fav {
+  opacity: 0.45;
+}
+
+/* ---------- регулятор громкости: значок, который раздвигается ---------- */
+
+.vexp {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 20px;
+  border-radius: 999px;
+  color: var(--dim);
+  transition: background-color 0.18s, color 0.12s, box-shadow 0.18s;
+}
+
+.audio:not(.shown):not([data-open]) {
+  display: none;
+}
+
+.vexp.playing {
+  color: var(--accent);
+}
+
+.vexp.muted {
+  color: var(--c-red);
+}
+
+.vexp[data-open] {
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  color: var(--fg);
+}
+
+.vicon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+
+.vicon:hover {
+  background: var(--press);
+}
+
+.vicon[data-icon]::before {
+  width: 13px;
+  height: 13px;
+}
+
+/* Ползунок прячется в нулевую ширину и плавно раздвигается. */
+.vslide {
+  width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  transition: width 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.vexp[data-open] .vslide {
+  width: 74px;
+}
+
+.vslide .range {
+  flex: none;
+  width: 66px;
+  margin: 0 4px;
+  opacity: 0;
+  transition: opacity 0.16s 0.04s;
+}
+
+.vexp[data-open] .vslide .range {
+  opacity: 1;
+}
+
+.vpct {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vpct:empty {
+  display: none;
+}
+
+.vexp .vpct {
+  padding-right: 5px;
+}
+
+.vexp[data-open] .vpct {
+  min-width: 3.1em;
+  text-align: right;
+  padding-right: 7px;
+}
+
+.vexp.blocked {
+  opacity: 0.6;
+}
+
+.close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.12s, background-color 0.12s;
+}
+
+.tab:hover .close,
+.tab.active .close {
+  opacity: 1;
+}
+
+.close:hover {
+  background: var(--press);
+  color: var(--fg);
+}
+
+/* ---------- заголовок группы ---------- */
+
+.group {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 4px;
+  margin: 4px 4px 1px;
+  border-radius: var(--radius);
+  transition: background-color 0.12s;
+}
+
+.group:hover {
+  background: var(--hover);
+}
+
+.chev {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  background: var(--dim);
+  mask: url("../icons/lucide/chevron-down.svg") center / 13px no-repeat;
+  transition: transform 0.18s var(--ease);
+}
+
+.group.collapsed .chev {
+  transform: rotate(-90deg);
+}
+
+/* Высота и отступ подобраны по замеру: с line-height: 1 и 1px снизу текст
+   по центру плашки с точностью до полпикселя и у строчных («сеть»), и у
+   слов с заглавной. Обычная высота строки сажала строчные на ~2px ниже. */
+.gtitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  height: 17px;
+  line-height: 16px;
+  padding: 0 7px 1px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--gc, var(--c-grey)) 82%, var(--fg));
+  background: color-mix(in srgb, var(--gc, var(--c-grey)) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gc, var(--c-grey)) 28%, transparent);
+}
+
+.gtitle:empty::before {
+  content: "Без названия";
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.group.collapsed .gtitle {
+  background: color-mix(in srgb, var(--gc, var(--c-grey)) 30%, transparent);
+}
+
+.count {
+  flex: none;
+  margin-left: auto;
+  min-width: 16px;
+  height: 15px;
+  line-height: 14px;
+  padding: 0 4px 1px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  background: var(--hover);
+}
+
+.rename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  outline: none;
+}
+
+/* ---------- новая вкладка ---------- */
+
+#new-tab {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 4px 0;
+  padding: 0 7px;
+  border-radius: var(--radius);
+  color: var(--dim);
+  text-align: left;
+  flex: none;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+#new-tab:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.plus {
+  width: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+/* ---------- перетаскивание ---------- */
+
+.dragging {
+  opacity: 0.4;
+}
+
+.tab.drop-before,
+.group.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab.drop-after,
+.group.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.pin.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.pin.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
+.drop-onto {
+  outline: 1.5px dashed var(--accent);
+  outline-offset: -1.5px;
+  background: var(--selected);
+}
+
+#scroll.drop-end #filler {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+#drag-image {
+  position: fixed;
+  top: -100px;
+  left: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ---------- всплывающие: меню и регулятор громкости ---------- */
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.97);
+  }
+}
+
+#menu {
+  position: fixed;
+  z-index: 10;
+  background: var(--menu-bg);
+  color: var(--menu-fg);
+  border-radius: 10px;
+  box-shadow: var(--pop-shadow);
+  animation: pop-in 0.12s var(--ease);
+}
+
+#menu {
+  min-width: 180px;
+  max-width: calc(100vw - 8px);
+  padding: 4px;
+}
+
+#menu[hidden] {
+  display: none;
+}
+
+.mi {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 25px;
+  padding: 0 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mi:hover {
+  background: var(--selected);
+}
+
+.mi.danger {
+  color: var(--c-red);
+}
+
+.mi.danger:hover {
+  background: color-mix(in srgb, var(--c-red) 18%, transparent);
+}
+
+.dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--gc, var(--c-grey));
+}
+
+.sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--border);
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 6px 10px;
+}
+
+.swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--gc);
+  transition: transform 0.1s var(--ease);
+}
+
+.swatch:hover {
+  transform: scale(1.18);
+}
+
+.swatch.current {
+  box-shadow: 0 0 0 2px var(--menu-bg), 0 0 0 3.5px var(--fg);
+}
+
+/* ---------- ползунок (громкость) ---------- */
+
+.range {
+  --fill: var(--accent);
+  min-width: 0;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.muted .range {
+  --fill: var(--faint);
+}
+
+.range::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.range::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--fill);
+}
+
+.range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--fg);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: transform 0.12s var(--ease);
+}
+
+.range:hover::-moz-range-thumb,
+.range:active::-moz-range-thumb {
+  transform: scale(1.2);
+}
+
+.range:focus-visible {
+  outline: none;
+}
+
+.range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ---------- плеер: по строке на звучащую вкладку ---------- */
+
+#player {
+  --pr-h: 34px;
+  --pr-gap: 2px;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  flex: none;
+  margin: 2px 4px 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 160% at 0% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 65%),
+    var(--surface);
+  box-shadow: var(--shadow);
+  animation: pop-in 0.16s var(--ease);
+}
+
+#player[hidden] {
+  display: none;
+}
+
+/* Обложка центрального трека, размытая в цветное пятно под всем плеером. */
+#player-bg {
+  position: absolute;
+  inset: -30px;
+  z-index: -1;
+  background: center / cover no-repeat;
+  filter: blur(26px) saturate(1.6);
+  opacity: 0;
+  transition: opacity 0.5s var(--ease);
+  pointer-events: none;
+}
+
+#player.has-cover #player-bg {
+  opacity: 0.42;
+}
+
+#player.has-cover:not(.is-playing) #player-bg {
+  opacity: 0.22;
+}
+
+#player-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pr-gap);
+}
+
+/* Барабан: строки лежат друг на друге в центре сцены, место каждой задаёт
+   transform из layoutWheel() (поворот на грань цилиндра). Перспектива —
+   на сцене, поэтому дальние строки естественно мельчают. */
+#player.wheel #player-list {
+  position: relative;
+  height: 104px;
+  perspective: 520px;
+  perspective-origin: 50% 50%;
+  overflow: hidden;
+}
+
+#player.wheel-tall #player-list {
+  height: 144px;
+}
+
+#player.wheel .pr {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  margin-top: calc(var(--pr-h) / -2);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* Центральная строка — «окно» барабана: подсветка и тень. */
+#player.wheel .pr.center {
+  background: var(--raised);
+  box-shadow: var(--shadow);
+}
+
+/* Боковые строки целиком — одна кнопка «повернуть сюда». */
+#player.wheel .pr:not(.center) {
+  cursor: pointer;
+}
+
+#player.wheel .pr:not(.center) > * {
+  pointer-events: none;
+}
+
+.pr {
+  position: relative;
+  flex: none;
+  height: var(--pr-h);
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 2px 0 3px;
+  border-radius: 7px;
+  transition: background-color 0.12s;
+}
+
+.pr:hover {
+  background: var(--hover);
+}
+
+.pr.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.pr.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.pr-art {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--raised);
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+}
+
+.pr.playing .pr-art {
+  box-shadow: 0 0 0 1.5px var(--accent), 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.pr-art img {
+  width: 16px;
+  height: 16px;
+}
+
+.pr-art.cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pr-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pr-title,
+.pr-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pr-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pr-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.pr-sub > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Эквалайзер «играет»: три полоски, только transform — дёшево. */
+.eq {
+  flex: none;
+  display: none;
+  align-items: flex-end;
+  gap: 1px;
+  width: 9px;
+  height: 8px;
+}
+
+.pr.playing .eq {
+  display: flex;
+}
+
+.eq i {
+  flex: 1;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  transform-origin: bottom;
+  animation: eq 0.9s ease-in-out infinite alternate;
+}
+
+.eq i:nth-child(2) {
+  animation-duration: 0.65s;
+  animation-delay: -0.3s;
+}
+
+.eq i:nth-child(3) {
+  animation-duration: 0.8s;
+  animation-delay: -0.55s;
+}
+
+@keyframes eq {
+  from {
+    transform: scaleY(0.25);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+.pr:not(.playing) .pr-title {
+  color: var(--dim);
+}
+
+.pl-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s, transform 0.1s var(--ease);
+}
+
+.pl-btn[hidden] {
+  display: none;
+}
+
+.pl-btn:hover {
+  background: var(--press);
+  color: var(--fg);
+}
+
+.pl-btn:active {
+  transform: scale(0.9);
+}
+
+.pl-btn[data-icon]::before {
+  width: 13px;
+  height: 13px;
+}
+
+/* Маленькая пауза — у боковых строк барабана; у центральной её роль
+   играет крупная кнопка пульта. */
+.pr.center .pl-play {
+  display: none;
+}
+
+.pl-play[data-icon]::before {
+  width: 12px;
+  height: 12px;
+}
+
+/* Позиция трека у боковых строк — тонкая линия по низу (у центральной
+   позиция на пульте). */
+.pr-bar {
+  position: absolute;
+  left: 37px;
+  right: 6px;
+  bottom: 0;
+  height: 6px;
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.pr.center .pr-bar {
+  display: none;
+}
+
+.pr-bar[hidden] {
+  display: none;
+}
+
+.pr-bar::before,
+.pr-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.pr-bar::before {
+  content: "";
+  background: var(--track);
+}
+
+.pr-fill {
+  background: var(--accent);
+  transform-origin: left;
+  transform: scaleX(0);
+  transition: transform 0.5s linear;
+}
+
+.pr:not(.playing) .pr-fill {
+  background: var(--faint);
+}
+
+/* ---------- пульт трека в центре ---------- */
+
+#deck {
+  position: relative;
+  padding: 2px 6px 3px;
+}
+
+#deck-seek {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 18px;
+}
+
+.deck-time {
+  flex: none;
+  min-width: 2.6em;
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+#deck-dur {
+  text-align: right;
+}
+
+#deck-bar {
+  --p: 0;
+  position: relative;
+  flex: 1;
+  height: 14px;
+  border-radius: 999px;
+  outline: none;
+}
+
+#deck-bar::before,
+#deck-fill {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 999px;
+  transition: height 0.15s var(--ease), margin 0.15s var(--ease);
+}
+
+#deck-bar::before {
+  background: var(--track);
+}
+
+#deck-fill {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 70%, var(--fg)), var(--accent));
+  transform-origin: left;
+  transform: scaleX(var(--p));
+  transition: transform 0.5s linear, height 0.15s var(--ease), margin 0.15s var(--ease);
+}
+
+#player:not(.is-playing) #deck-fill {
+  background: var(--dim);
+}
+
+#deck-thumb {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--p) * 100%);
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--fg);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+  transform: scale(0);
+  transition: transform 0.15s var(--ease), left 0.5s linear;
+}
+
+#deck.seekable #deck-bar {
+  cursor: pointer;
+}
+
+#deck.seekable #deck-bar:hover::before,
+#deck.seekable #deck-bar:hover #deck-fill,
+#deck.dragging #deck-bar::before,
+#deck.dragging #deck-fill {
+  height: 6px;
+  margin-top: -3px;
+}
+
+#deck.seekable #deck-bar:hover #deck-thumb,
+#deck.seekable #deck-bar:focus-visible #deck-thumb,
+#deck.dragging #deck-thumb {
+  transform: scale(1);
+}
+
+#deck.dragging #deck-fill,
+#deck.dragging #deck-thumb {
+  transition: none;
+}
+
+#deck-bar:focus-visible::before {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Время под курсором. */
+#deck-tip {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 3px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--raised);
+  box-shadow: var(--pop-shadow);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#deck-tip[hidden],
+#deck:not(.seekable) #deck-tip {
+  display: none;
+}
+
+#deck-live {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  margin: 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-red);
+}
+
+#deck-live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: live-dot 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes live-dot {
+  to {
+    opacity: 0.3;
+  }
+}
+
+#deck.live #deck-live {
+  display: flex;
+}
+
+#deck.no-pos #deck-seek {
+  display: none;
+}
+
+#deck.no-pos #deck-ctl {
+  margin-top: 0;
+}
+
+#deck.live .deck-time,
+#deck.live #deck-bar {
+  display: none;
+}
+
+#deck-ctl {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 1px;
+}
+
+.dk-btn {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--fg);
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s, opacity 0.12s, transform 0.12s var(--ease);
+}
+
+.dk-btn:hover:not(.off) {
+  background: var(--press);
+}
+
+.dk-btn:active:not(.off) {
+  transform: scale(0.88);
+}
+
+/* Недоступна: приглушена, но нажимается — и объясняет почему. */
+.dk-btn.off {
+  opacity: 0.28;
+  cursor: help;
+}
+
+.dk-btn[data-icon]::before {
+  width: 15px;
+  height: 15px;
+}
+
+/* ±10 с: круговая стрелка, внутри цифра. */
+.dk-skip {
+  color: var(--dim);
+}
+
+.dk-skip[data-icon]::before {
+  width: 20px;
+  height: 20px;
+}
+
+.dk-skip span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 1px;
+  font-size: 7.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.dk-skip:hover:not(.off) {
+  color: var(--fg);
+}
+
+.dk-play {
+  width: 36px;
+  height: 36px;
+  margin: 0 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.dk-play:hover:not(.off) {
+  background: color-mix(in srgb, var(--accent) 85%, var(--fg));
+}
+
+.dk-play[data-icon]::before {
+  width: 15px;
+  height: 15px;
+}
+
+.dk-play[data-icon="play-fill"]::before {
+  margin-left: 2px;
+}
+
+/* Команда ушла, ответа ещё нет: вокруг кнопки бежит кольцо. */
+.dk-play::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+#player.pending .dk-play::after {
+  opacity: 1;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* Подсказка пульта: почему кнопка не работает, команда не дошла и т. п. */
+#deck-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 3px;
+  padding: 4px 6px 4px 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--c-yellow) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-yellow) 30%, transparent);
+  font-size: 10.5px;
+  line-height: 1.3;
+  animation: pop-in 0.16s var(--ease);
+}
+
+#deck-note[hidden] {
+  display: none;
+}
+
+#deck-note-text {
+  flex: 1;
+  min-width: 0;
+}
+
+#deck-reload {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#deck-reload[hidden] {
+  display: none;
+}
+
+/* ---------- иконки Lucide (https://lucide.dev, ISC — icons/lucide/LICENSE) ----------
+   Иконка — маска поверх currentColor: цвет берётся из текста, поэтому
+   одна и та же иконка работает в любой теме и на hover. */
+
+[data-icon]::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  mask: var(--icon) center / contain no-repeat;
+}
+
+[data-icon="x"] { --icon: url("../icons/lucide/x.svg"); }
+[data-icon="plus"] { --icon: url("../icons/lucide/plus.svg"); }
+[data-icon="volume"] { --icon: url("../icons/lucide/volume.svg"); }
+[data-icon="volume-1"] { --icon: url("../icons/lucide/volume-1.svg"); }
+[data-icon="volume-2"] { --icon: url("../icons/lucide/volume-2.svg"); }
+[data-icon="volume-x"] { --icon: url("../icons/lucide/volume-x.svg"); }
+[data-icon="play"] { --icon: url("../icons/lucide/play.svg"); }
+[data-icon="pause"] { --icon: url("../icons/lucide/pause.svg"); }
+[data-icon="play-fill"] { --icon: url("../icons/lucide/play-fill.svg"); }
+[data-icon="pause-fill"] { --icon: url("../icons/lucide/pause-fill.svg"); }
+[data-icon="skip-back-fill"] { --icon: url("../icons/lucide/skip-back-fill.svg"); }
+[data-icon="skip-forward-fill"] { --icon: url("../icons/lucide/skip-forward-fill.svg"); }
+[data-icon="rotate-ccw"] { --icon: url("../icons/lucide/rotate-ccw.svg"); }
+[data-icon="rotate-cw"] { --icon: url("../icons/lucide/rotate-cw.svg"); }
+[data-icon="moon"] { --icon: url("../icons/lucide/moon.svg"); }
+[data-icon="trash-2"] { --icon: url("../icons/lucide/trash-2.svg"); }
+
+.close[data-icon]::before {
+  width: 13px;
+  height: 13px;
+}

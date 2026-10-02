@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Тестовый плеер</title>
+<script src="tone.js"></script>
+<script>
+"use strict";
+// Параметры: mode=detached|dom|video, meta=1, handlers=1 (play/pause/prev/next/seekto),
+// newPerTrack=1 (на каждый трек — новый плеер), ignore=1 (обработчики ничего не делают),
+// dur=секунды, muted=1 (беззвучное автовоспроизведение), loop=1,
+// slow=мс (обработчики сайта срабатывают с задержкой — как у тяжёлых сайтов),
+// busy=мс (страница периодически занимает поток на столько — тяжёлый сайт).
+const q = new URLSearchParams(location.search);
+const mode = q.get("mode") || "detached";
+const dur = Number(q.get("dur") || 120);
+let track = 1;
+let player = null;
+
+function makePlayer() {
+  let el;
+  if (mode === "detached") el = new Audio();
+  else {
+    el = document.createElement(mode === "video" ? "video" : "audio");
+    (document.body || document.documentElement).append(el);
+  }
+  el.src = toneUrl(dur, 300 + track * 40);
+  if (q.get("muted") === "1") el.muted = true;
+  if (q.get("loop") === "1") el.loop = true;
+  return el;
+}
+
+function setMeta() {
+  if (q.get("meta") === "1") {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: "Трек " + track, artist: "Тест", album: "E2E" });
+  }
+}
+
+const api = {
+  play: () => player.play(),
+  pause: () => player.pause(),
+  mute: () => (player.muted = true),
+  unmute: () => (player.muted = false),
+  next() {
+    track++;
+    if (q.get("newPerTrack") === "1") {
+      player.pause();
+      player = makePlayer();
+    } else {
+      player.src = toneUrl(dur, 300 + track * 40);
+    }
+    setMeta();
+    return player.play();
+  },
+  state: () => ({ paused: player.paused, muted: player.muted, track, t: player.currentTime }),
+};
+window.api = api;
+
+player = makePlayer();
+setMeta();
+if (q.get("handlers") === "1") {
+  const ignore = q.get("ignore") === "1";
+  const slow = Number(q.get("slow") || 0);
+  const h = (fn) => (d) => {
+    pageLog("handler " + d.action);
+    if (ignore) return;
+    if (slow) setTimeout(() => fn(d), slow);
+    else fn(d);
+  };
+  navigator.mediaSession.setActionHandler("play", h(() => api.play()));
+  navigator.mediaSession.setActionHandler("pause", h(() => api.pause()));
+  navigator.mediaSession.setActionHandler("nexttrack", h(() => api.next()));
+  navigator.mediaSession.setActionHandler("previoustrack", h(() => api.next()));
+  navigator.mediaSession.setActionHandler("seekto", h((d) => (player.currentTime = d.seekTime)));
+}
+// Как настоящий плеер: интерфейс сайта постоянно читает позицию для полосы прогресса.
+setInterval(() => player.currentTime, 500);
+const busy = Number(q.get("busy") || 0);
+if (busy) {
+  setInterval(() => {
+    const end = performance.now() + busy;
+    while (performance.now() < end);
+  }, busy + 700);
+}
+player.play().then(() => pageLog("playing"), (e) => pageLog("play failed " + e));
+</script>

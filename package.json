@@ -1,0 +1,11 @@
+{
+  "name": "sidebar-tabs",
+  "private": true,
+  "license": "MIT",
+  "description": "Тесты без зависимостей: npm test — модульные (node:test), npm run e2e — сквозные в настоящем Firefox Developer Edition (см. e2e/run.js).",
+  "scripts": {
+    "build": "./build.sh",
+    "test": "node --test \"test/*.test.js\"",
+    "e2e": "node e2e/run.js"
+  }
+}

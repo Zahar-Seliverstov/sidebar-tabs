@@ -1,0 +1,5 @@
+<!-- по мотивам lucide play/pause/skip (ISC), залитые -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+  <path d="M6 5.2a.8.8 0 0 1 1.25-.66L16 11.34a.8.8 0 0 1 0 1.32l-8.75 6.8A.8.8 0 0 1 6 18.8Z" />
+  <path d="M19 5v14" fill="none" stroke-linecap="round" />
+</svg>
