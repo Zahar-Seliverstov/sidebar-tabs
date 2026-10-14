@@ -228,6 +228,12 @@
     }
   }
 
+  // Кнопки плагинов (content/plugin-api.js): { "плагин/кнопка": активна? }.
+  function pluginButtons() {
+    const P = window.__mtbPlugins;
+    return P ? P.snapshot() : {};
+  }
+
   // null — показывать нечего.
   function snapshot() {
     const meta = readMetadata();
@@ -277,12 +283,13 @@
       late: late && M.handlers.size === 0 && !!meta,
       // Прямая трансляция: у плеера нет конца (радио, стрим).
       live: !position && !!el && el.duration === Infinity,
+      plugins: pluginButtons(),
     };
   }
 
   function stateKey(state) {
     const p = state && state.position;
-    return JSON.stringify(state && [state.meta, state.playing, state.pageMuted, state.actions, state.canPlay, p && Math.round(p.duration), p && p.rate, state && state.live, state && state.late]);
+    return JSON.stringify(state && [state.meta, state.playing, state.pageMuted, state.actions, state.canPlay, p && Math.round(p.duration), p && p.rate, state && state.live, state && state.late, state && state.plugins]);
   }
 
   function send(state) {
@@ -424,6 +431,9 @@
     schedule(true);
   }
 
+  // Плагины сообщают, что их кнопки могли измениться (content/plugin-api.js).
+  M.refresh = () => schedule();
+
   window.addEventListener("pagehide", () => {
     if (M.shown) send(null);
     M.shown = false;
@@ -438,6 +448,11 @@
 
   // Возвращает действие, которое на самом деле выполнялось (toggle → play/pause).
   function control(action, seekTime) {
+    if (action.startsWith("plugin:")) {
+      const P = window.__mtbPlugins;
+      if (P) P.press(action.slice(7));
+      return action;
+    }
     const el = mainElement();
     if (action === "toggle") {
       const state = snapshot();
@@ -480,6 +495,17 @@
     if (action === "seekto" || action === "seekforward" || action === "seekbackward") {
       await sleep(SEEK_SETTLE_MS);
       return true;
+    }
+    // Кнопка плагина: ждём, пока её состояние сменится (или она пропадёт).
+    if (action.startsWith("plugin:")) {
+      const key = action.slice(7);
+      const was = before && before.plugins ? before.plugins[key] : undefined;
+      const deadline = Date.now() + CONTROL_MAX_MS;
+      while (Date.now() < deadline) {
+        if (pluginButtons()[key] !== was) return true;
+        await sleep(CONTROL_POLL_MS);
+      }
+      return false;
     }
     const isTrack = action === "nexttrack" || action === "previoustrack";
     const beforeTrack = isTrack ? trackKey(before) : "";

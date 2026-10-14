@@ -1,0 +1,7 @@
+{
+  "name": "E2E: нравится",
+  "description": "Тестовый плагин: кнопка «нравится» тестовой страницы плеера",
+  "matches": ["http://127.0.0.1/*"],
+  "js": ["page.js"],
+  "buttons": [{ "id": "like", "title": "Нравится", "activeTitle": "Уже нравится", "icon": "like.svg", "activeIcon": "liked.svg" }]
+}

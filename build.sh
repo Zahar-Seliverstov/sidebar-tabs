@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 python3 - <<'PY'
 import os, zipfile
 
-SHIP = ["manifest.json", "background.js", "content", "sidebar", "icons"]
+SHIP = ["manifest.json", "background.js", "content", "sidebar", "icons", "plugins"]
 out = "dist/sidebar-tabs.xpi"
 os.makedirs("dist", exist_ok=True)
 

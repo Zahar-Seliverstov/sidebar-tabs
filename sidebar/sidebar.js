@@ -46,6 +46,13 @@ const state = {
   volumes: new Map(),
   // Вкладки, где страница не дала выставить громкость (служебные страницы).
   volumeBlocked: new Set(),
+  // tabId → { volume, muted } микрофона вкладки (ведёт background.js, по
+  // умолчанию — 100% и включён; см. content/mic.js).
+  mic: new Map(),
+  // Вкладки, где микрофоном управлять не вышло (захвачен до установки расширения).
+  micBlocked: new Set(),
+  // Плагины (ведёт background.js): [{ id, name, description, enabled, buttons }].
+  plugins: [],
   // Что играет во вкладках (ведёт background.js, см. content/media.js).
   media: [],
   // Вкладки плеера из других окон (своего окна — в tabs).
@@ -108,6 +115,8 @@ async function resync() {
   // Громкость не чистим: её держит фон для вкладок всех окон, а плеер
   // показывает вкладку и из другого окна.
   for (const id of state.volumeBlocked) if (!state.tabs.has(id)) state.volumeBlocked.delete(id);
+  for (const id of state.mic.keys()) if (!state.tabs.has(id)) state.mic.delete(id);
+  for (const id of state.micBlocked) if (!state.tabs.has(id)) state.micBlocked.delete(id);
   scheduleRender();
 }
 
@@ -479,13 +488,14 @@ function makeTab(key) {
 
   const title = document.createElement("span");
   title.className = "title";
+  const mic = makeVolumeControl("mic vexp");
   const audio = makeVolumeControl("audio vexp");
   const close = document.createElement("span");
   close.className = "close";
   close.title = "Закрыть вкладку";
   close.dataset.icon = "x";
 
-  el.append(makeIcon(), title, audio, close);
+  el.append(makeIcon(), title, mic, audio, close);
   return el;
 }
 
@@ -498,10 +508,17 @@ function updateTab(el, row) {
   if (setIfChanged(el, "tip", tooltip(tab))) el.title = el._v.tip;
   setIcon(el.firstChild, iconFor(tab, state.favicons));
 
-  // Значок звука показывается, когда вкладка звучит, выключена или у неё
-  // изменена громкость (или регулятор открыт из меню).
-  const audioEl = el.children[2];
-  const shown = !!tab.audible || isMuted(tab) || state.volumes.has(tab.id);
+  // Значок микрофона — пока вкладка его пишет (это знает сам Firefox).
+  const micEl = el.children[2];
+  const micShown = usesMic(tab);
+  if (setIfChanged(el, "micShown", micShown)) micEl.classList.toggle("shown", micShown);
+  if (micShown || micEl.dataset.open !== undefined) updateMicControl(micEl, tab.id);
+
+  // Значок звука показывается, когда вкладка звучит, выключена, у неё
+  // изменена громкость (или регулятор открыт из меню) — и всё время звонка:
+  // в тихом звонке вкладка не «звучит», а громкость собеседника нужна сразу.
+  const audioEl = el.children[3];
+  const shown = !!tab.audible || isMuted(tab) || state.volumes.has(tab.id) || micShown;
   if (setIfChanged(el, "audioShown", shown)) audioEl.classList.toggle("shown", shown);
   if (setIfChanged(el, "audible", !!tab.audible)) audioEl.classList.toggle("playing", !!tab.audible);
   updateVolumeControl(audioEl, tab.id, true);
@@ -631,20 +648,38 @@ function setVolume(ids, volume) {
   }
 }
 
+// Микрофон — так же: применяет фон (и content/mic.js), здесь — отображение.
+function setMic(ids, change) {
+  for (const id of ids) {
+    const next = { ...micOf(id), ...change };
+    if (next.volume >= 1 && !next.muted) state.mic.delete(id);
+    else state.mic.set(id, next);
+  }
+  scheduleRender();
+  for (const id of ids) {
+    browser.runtime.sendMessage({ type: "setMic", tabId: id, ...change }).then((applied) => {
+      const had = state.micBlocked.has(id);
+      if (applied) state.micBlocked.delete(id);
+      else state.micBlocked.add(id);
+      if (had !== !applied) scheduleRender();
+    }, report);
+  }
+}
+
 // Ползунок шлёт input на каждый пиксель — отправляем не чаще раза в 80 мс,
 // но последнее значение не теряется никогда.
 const VOLUME_THROTTLE_MS = 80;
 let volumeTimer = null;
 let volumePending = null;
 
-function setVolumeThrottled(ids, volume) {
-  volumePending = [ids, volume];
+function sendThrottled(fn, ...args) {
+  volumePending = [fn, args];
   if (volumeTimer) return;
-  setVolume(...volumePending);
+  fn(...args);
   volumePending = null;
   volumeTimer = setTimeout(function flush() {
     volumeTimer = null;
-    if (volumePending) setVolumeThrottled(...volumePending);
+    if (volumePending) sendThrottled(volumePending[0], ...volumePending[1]);
   }, VOLUME_THROTTLE_MS);
 }
 
@@ -743,8 +778,32 @@ function toggleMuted(id) {
 function changeVolume(ids, volume, throttled) {
   const muted = ids.filter((id) => isMuted(tabById(id)));
   if (volume > 0 && muted.length) run(setMuted(muted, false));
-  if (throttled) setVolumeThrottled(ids, volume);
+  if (throttled) sendThrottled(setVolume, ids, volume);
   else setVolume(ids, volume);
+}
+
+function usesMic(tab) {
+  return !!(tab && tab.sharingState && tab.sharingState.microphone);
+}
+
+function micOf(id) {
+  return state.mic.get(id) || { volume: 1, muted: false };
+}
+
+function shownMic(id) {
+  const m = micOf(id);
+  return m.muted ? 0 : m.volume;
+}
+
+function toggleMicMuted(id) {
+  setMic([id], { muted: !micOf(id).muted });
+}
+
+// Как и со звуком: сдвинуть громкость выключенного микрофона — включить его.
+function changeMic(ids, volume, throttled) {
+  const change = volume > 0 ? { volume, muted: false } : { volume };
+  if (throttled) sendThrottled(setMic, ids, change);
+  else setMic(ids, change);
 }
 
 // Регулятор: [значок][ползунок, ширина 0 → раскрывается][проценты].
@@ -772,22 +831,46 @@ function makeVolumeControl(cls) {
 
 // showPct — проценты видны и в свёрнутом виде (у вкладки с изменённой громкостью).
 function updateVolumeControl(box, tabId, showPct) {
-  const tab = tabById(tabId);
-  const muted = isMuted(tab);
+  const muted = isMuted(tabById(tabId));
   const vol = volumeOf(tabId);
-  const icon = muted ? "volume-x" : volumeIcon(vol);
-  if (setIfChanged(box, "icon", icon)) box.firstChild.dataset.icon = icon;
-  if (setIfChanged(box, "muted", muted)) box.classList.toggle("muted", muted);
   const blocked = state.volumeBlocked.has(tabId);
-  if (setIfChanged(box, "blocked", blocked)) box.classList.toggle("blocked", blocked);
-  const tip = blocked
-    ? "Эта страница не даёт менять громкость (служебная страница или ещё не загружена)"
-    : (muted ? "Звук выключен. " : "") + "Клик — выключить/включить звук, наведите — громкость, колесо — ±5%";
-  if (setIfChanged(box, "tip", tip)) box.firstChild.title = tip;
+  paintControl(box, {
+    icon: muted ? "volume-x" : volumeIcon(vol),
+    muted,
+    blocked,
+    tip: blocked
+      ? "Эта страница не даёт менять громкость (служебная страница или ещё не загружена)"
+      : (muted ? "Звук выключен. " : "") + "Клик — выключить/включить звук, наведите — громкость, колесо — ±5%",
+    value: shownVolume(tabId),
+    pct: showPct && !muted && vol < 1,
+  });
+}
+
+function updateMicControl(box, tabId) {
+  const m = micOf(tabId);
+  const blocked = state.micBlocked.has(tabId);
+  paintControl(box, {
+    icon: m.muted ? "mic-off" : "mic",
+    muted: m.muted,
+    blocked,
+    tip: blocked
+      ? "Микрофон захвачен до установки расширения — перезагрузите страницу, чтобы им управлять"
+      : (m.muted ? "Микрофон выключен: сайт слышит тишину. " : "Микрофон. ") +
+        "Клик — выключить/включить, наведите — громкость, колесо — ±5%",
+    value: shownMic(tabId),
+    pct: !m.muted && m.volume < 1,
+  });
+}
+
+function paintControl(box, p) {
+  if (setIfChanged(box, "icon", p.icon)) box.firstChild.dataset.icon = p.icon;
+  if (setIfChanged(box, "muted", p.muted)) box.classList.toggle("muted", p.muted);
+  if (setIfChanged(box, "blocked", p.blocked)) box.classList.toggle("blocked", p.blocked);
+  if (setIfChanged(box, "tip", p.tip)) box.firstChild.title = p.tip;
   const range = box.children[1].firstChild;
-  const value = String(Math.round(shownVolume(tabId) * 100));
+  const value = String(Math.round(p.value * 100));
   if (!(sliderHeld && document.activeElement === range) && range.value !== value) range.value = value;
-  const pct = box.dataset.open !== undefined || (showPct && !muted && vol < 1) ? range.value + "%" : "";
+  const pct = box.dataset.open !== undefined || p.pct ? range.value + "%" : "";
   if (setIfChanged(box, "pct", pct)) box.lastChild.textContent = pct;
 }
 
@@ -833,7 +916,8 @@ document.addEventListener("input", (e) => {
   const id = volumeTargetOf(box);
   if (id === null) return;
   box.lastChild.textContent = e.target.value + "%";
-  changeVolume([id], Number(e.target.value) / 100, true);
+  if (box.classList.contains("mic")) changeMic([id], Number(e.target.value) / 100, true);
+  else changeVolume([id], Number(e.target.value) / 100, true);
 });
 
 // Ползунок внутри перетаскиваемой строки: пока его тянут, строка не
@@ -982,14 +1066,14 @@ function makePlayerRow(key) {
   fill.className = "pr-fill";
   bar.append(fill);
 
-  el.append(
-    art,
-    text,
-    makeVolumeControl("pr-vol vexp"),
-    button("pl-btn pl-play", "toggle", "play", ""),
-    bar
-  );
-  el._p = { img, title, sub, fill, bar, vol: el.children[2], play: el.children[3] };
+  // Кнопки плагинов («в мою музыку» и т. п.) — про этот трек, рядом с ним.
+  const plugins = document.createElement("span");
+  plugins.className = "pr-plugins";
+  const vol = makeVolumeControl("pr-vol vexp");
+  const play = button("pl-btn pl-play", "toggle", "play", "");
+
+  el.append(art, text, plugins, vol, play, bar);
+  el._p = { img, title, sub, fill, bar, plugins, vol, play };
   return el;
 }
 
@@ -1018,6 +1102,7 @@ function updatePlayerRow(el, s) {
   if (muted) cls += " muted";
   if (setIfChanged(el, "cls", cls)) el.className = cls;
 
+  updatePluginButtons(p.plugins, s);
   updateVolumeControl(p.vol, s.tabId, false);
   if (setIfChanged(el, "play", s.playing ? "pause" : "play")) {
     p.play.dataset.icon = el._v.play;
@@ -1087,6 +1172,9 @@ function sendMediaControl(s, action, seekTime) {
     s.playing = !s.playing;
   } else if (action === "seekto" && s.position) {
     s.position = { ...s.position, position: seekTime, at: Date.now() };
+  } else if (action.startsWith("plugin:") && s.plugins) {
+    const key = action.slice(7);
+    s.plugins = { ...s.plugins, [key]: !s.plugins[key] };
   }
   scheduleRender();
   const token = ++controlToken;
@@ -1211,6 +1299,29 @@ function updateDeck() {
   $deck.classList.toggle("no-pos", !s.position && s.live !== true);
   $deck.classList.toggle("seekable", !!s.position && s.canSeek);
   updateDeckProgress(s);
+}
+
+// Кнопки плагинов строки — те, что страница объявила доступными для этого трека.
+function updatePluginButtons(box, s) {
+  const keys = Object.keys(s.plugins || {}).filter(pluginButton);
+  if ([...box.children].map((b) => b.dataset.key).join() !== keys.join()) {
+    box.textContent = "";
+    for (const key of keys) {
+      const btn = button("pl-btn pr-plugin", "plugin:" + key, "plugin", "");
+      btn.dataset.key = key;
+      btn._v = {};
+      box.append(btn);
+    }
+  }
+  for (const btn of box.children) {
+    const b = pluginButton(btn.dataset.key);
+    const on = s.plugins[btn.dataset.key] === true;
+    if (setIfChanged(btn, "on", on)) btn.classList.toggle("on", on);
+    const icon = on ? b.activeIcon : b.icon;
+    if (setIfChanged(btn, "icon", icon)) btn.style.setProperty("--icon", `url(${JSON.stringify(icon)})`);
+    const title = on ? b.activeTitle : b.title;
+    if (setIfChanged(btn, "title", title)) btn.title = title;
+  }
 }
 
 // Недоступная кнопка не выключается совсем: по нажатию объясняет причину.
@@ -1580,6 +1691,7 @@ const $tbTotal = document.getElementById("tb-total");
 const $tbLoaded = document.getElementById("tb-loaded");
 const $tbDiscard = document.getElementById("tb-discard");
 const $tbClose = document.getElementById("tb-close-loose");
+const $tbPlugins = document.getElementById("tb-plugins");
 let closeConfirmTimer = 0;
 
 // Что можно выгрузить: не активная (её Firefox не выгружает), не уже
@@ -1630,7 +1742,9 @@ function resetCloseConfirm() {
 function onToolbarClick(e) {
   const btn = e.target.closest("button");
   if (!btn || btn.disabled) return;
-  if (btn === $tbDiscard) {
+  if (btn === $tbPlugins) {
+    run(openPluginsMenu());
+  } else if (btn === $tbDiscard) {
     run(browser.tabs.discard(discardableIds([...state.tabs.values()])));
   } else if (btn === $tbClose) {
     if (!btn.classList.contains("confirm")) {
@@ -1649,6 +1763,42 @@ function onToolbarClick(e) {
     if (ids.length >= state.tabs.size) run(newTab());
     run(browser.tabs.remove(ids));
   }
+}
+
+// ---------------------------------------------------------------- плагины
+//
+// Меню плагинов — под кнопкой с пазлом: галочка = включён. Список
+// перечитывается при каждом открытии (другая панель могла его поменять).
+
+async function loadPlugins() {
+  const list = await browser.runtime.sendMessage({ type: "getPlugins" });
+  state.plugins = Array.isArray(list) ? list : [];
+  scheduleRender();
+}
+
+async function openPluginsMenu() {
+  await loadPlugins();
+  const r = $tbPlugins.getBoundingClientRect();
+  const items = state.plugins.map((p) => ({
+    label: p.name,
+    title: p.description,
+    checked: p.enabled,
+    action: async () => {
+      await browser.runtime.sendMessage({ type: "setPlugin", id: p.id, enabled: !p.enabled });
+      await loadPlugins();
+    },
+  }));
+  if (!items.length) items.push({ label: "Плагинов нет", action: () => {} });
+  openMenu(items, r.left, r.bottom + 4);
+}
+
+function pluginButton(key) {
+  for (const p of state.plugins) {
+    if (!p.enabled) continue;
+    const b = p.buttons.find((x) => x.key === key);
+    if (b) return b;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- мышь
@@ -1673,7 +1823,9 @@ document.addEventListener("click", (e) => {
   }
 
   if (e.target.closest(".vexp") && !e.target.closest(".pr:not(.center)")) {
-    if (e.target.classList.contains("vicon")) toggleMuted(volumeTargetOf(e.target));
+    if (!e.target.classList.contains("vicon")) return;
+    if (e.target.closest(".mic")) toggleMicMuted(volumeTargetOf(e.target));
+    else toggleMuted(volumeTargetOf(e.target));
     return;
   }
   if ($player.contains(e.target)) {
@@ -1760,6 +1912,14 @@ document.addEventListener(
     if (!node) return;
     let ids = null;
     const box = node.closest(".vexp");
+    if (box && box.classList.contains("mic")) {
+      // Микрофон — только этой вкладки, не всего выделения.
+      const id = tabIdOf(box);
+      if (id === null) return;
+      e.preventDefault();
+      changeMic([id], Math.min(1, Math.max(0, Math.round((shownMic(id) + (e.deltaY > 0 ? 0.05 : -0.05)) * 20) / 20)), false);
+      return;
+    }
     if (box && box.closest(".pr")) ids = box.closest(".pr:not(.center)") ? null : [volumeTargetOf(box)];
     else if (box) ids = targetsFor(tabIdOf(box));
     if (!ids || ids[0] === null) return;
@@ -2165,6 +2325,13 @@ function openMenu(items, x, y) {
       setColorVar(dot, item.color);
       mi.append(dot);
     }
+    if (item.checked !== undefined) {
+      const check = document.createElement("span");
+      check.className = "check";
+      if (item.checked) check.dataset.icon = "check";
+      mi.append(check);
+    }
+    if (item.title) mi.title = item.title;
     mi.append(item.label);
     mi.addEventListener("click", () => {
       closeMenu();
@@ -2211,9 +2378,20 @@ function tabMenu(id) {
     label: "Громкость…",
     action: () => {
       const el = els.get((first.pinned ? "p" : "t") + id);
-      if (el && el.querySelector(".vexp")) openVolume(el.querySelector(".vexp"), true);
+      if (el && el.querySelector(".audio")) openVolume(el.querySelector(".audio"), true);
     },
   });
+  if (n === 1 && usesMic(first)) {
+    const m = micOf(id);
+    items.push({ label: m.muted ? "Включить микрофон" : "Выключить микрофон", action: () => setMic([id], { muted: !m.muted }) });
+    items.push({
+      label: "Громкость микрофона…",
+      action: () => {
+        const el = els.get((first.pinned ? "p" : "t") + id);
+        if (el && el.querySelector(".mic")) openVolume(el.querySelector(".mic"), true);
+      },
+    });
+  }
   items.push("-");
   items.push(
     { label: "Перезагрузить" + suffix, action: () => Promise.all(ids.map((x) => browser.tabs.reload(x))) },
@@ -2293,18 +2471,21 @@ $scroll.addEventListener(
 
 (async () => {
   try {
-    const [win, stored, volumes, media] = await Promise.all([
+    const [win, stored, volumes, media, mic] = await Promise.all([
       browser.windows.getCurrent(),
       browser.storage.local.get("favicons").catch(() => ({})),
       browser.runtime.sendMessage({ type: "getVolumes" }).catch(() => ({})),
       browser.runtime.sendMessage({ type: "getMedia" }).catch(() => []),
+      browser.runtime.sendMessage({ type: "getMic" }).catch(() => ({})),
     ]);
     state.windowId = win.id;
     state.media = Array.isArray(media) ? media : [];
     for (const [id, v] of Object.entries(volumes || {})) state.volumes.set(Number(id), v);
+    for (const [id, m] of Object.entries(mic || {})) state.mic.set(Number(id), m);
     if (stored.favicons && typeof stored.favicons === "object") {
       state.favicons = new Map(Object.entries(stored.favicons));
     }
+    loadPlugins().catch(report);
     listenTheme();
     listenMedia();
     listen();

@@ -8,7 +8,8 @@
 // newPerTrack=1 (на каждый трек — новый плеер), ignore=1 (обработчики ничего не делают),
 // dur=секунды, muted=1 (беззвучное автовоспроизведение), loop=1,
 // slow=мс (обработчики сайта срабатывают с задержкой — как у тяжёлых сайтов),
-// busy=мс (страница периодически занимает поток на столько — тяжёлый сайт).
+// busy=мс (страница периодически занимает поток на столько — тяжёлый сайт),
+// like=1 — у сайта своя кнопка «нравится» (для тестового плагина e2e-like).
 const q = new URLSearchParams(location.search);
 const mode = q.get("mode") || "detached";
 const dur = Number(q.get("dur") || 120);
@@ -50,12 +51,27 @@ const api = {
     setMeta();
     return player.play();
   },
-  state: () => ({ paused: player.paused, muted: player.muted, track, t: player.currentTime }),
+  state: () => ({
+    paused: player.paused,
+    muted: player.muted,
+    track,
+    t: player.currentTime,
+    liked: document.getElementById("like")?.dataset.on === "1",
+  }),
 };
 window.api = api;
 
 player = makePlayer();
 setMeta();
+if (q.get("like") === "1") {
+  const like = document.createElement("button");
+  like.id = "like";
+  like.dataset.on = "0";
+  like.textContent = "♡";
+  // Как у настоящих сайтов: состояние меняется не сразу, а после ответа сервера.
+  like.onclick = () => setTimeout(() => (like.dataset.on = like.dataset.on === "1" ? "0" : "1"), 150);
+  (document.body || document.documentElement).append(like);
+}
 if (q.get("handlers") === "1") {
   const ignore = q.get("ignore") === "1";
   const slow = Number(q.get("slow") || 0);

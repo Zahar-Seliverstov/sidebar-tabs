@@ -172,6 +172,7 @@ function createMockBrowser({ initialStorage = {}, withTabGroups = false } = {}) 
     runtime: {
       onStartup: createEvent(),
       onMessage: createEvent(),
+      getURL: (path) => "moz-extension://test/" + path.replace(/^\//, ""),
     },
     __calls: calls,
     __storageData: storageData,

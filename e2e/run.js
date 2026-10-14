@@ -32,7 +32,7 @@ const ROOT = path.resolve(__dirname, "..");
 const PAGES = path.join(__dirname, "pages");
 const FIREFOX = process.env.FIREFOX || "firefox-developer-edition";
 const EXT_ID = "minimal-tab-bar@local.ext";
-const SHIP = ["manifest.json", "background.js", "content", "sidebar", "icons"];
+const SHIP = ["manifest.json", "background.js", "content", "sidebar", "icons", "plugins"];
 const STEP_TIMEOUT_MS = 6000;
 
 // ---------------------------------------------------------------- сервер
@@ -131,7 +131,7 @@ async function holds(describe, predicate, ms) {
 }
 
 function summary(state) {
-  return state ? state.sessions.map((s) => ({ tab: s.tabId, frame: s.frameId, title: s.title, playing: s.playing, basic: !!s.basic, late: !!s.late, actions: s.actions })) : null;
+  return state ? state.sessions.map((s) => ({ tab: s.tabId, frame: s.frameId, title: s.title, playing: s.playing, basic: !!s.basic, late: !!s.late, actions: s.actions, plugins: s.plugins })) : null;
 }
 
 const rowsOf = (state, tabId) => state.sessions.filter((s) => s.tabId === tabId);
@@ -328,6 +328,19 @@ scenario("обновление расширения при играющей му
   await cmd("close", { tabId: tab });
 });
 
+scenario("обновление расширения: плагин подключается к уже открытой странице сайта", async () => {
+  const LIKE = "e2e-like/like";
+  const tab = await openPage("player", "mode=dom&meta=1&handlers=1&like=1");
+  await waitFor("кнопка плагина", (s) => rowOf(s, tab)?.plugins?.[LIKE] === false);
+  const before = latest.at;
+  await cmd("reloadExt");
+  await waitFor("фон перезапустился", (s) => s.at > before + 500, 15000);
+  const row = await waitFor("кнопка плагина вернулась", (s) => rowOf(s, tab)?.plugins?.[LIKE] === false && rowOf(s, tab), 8000).catch((e) => { throw new Error(e.message + "\nDBG " + JSON.stringify(latest.dbg)); });
+  await cmd("control", { tabId: tab, frameId: row.frameId, action: "plugin:" + LIKE });
+  await waitPage("нажатие дошло до сайта", tab, (st) => st.liked);
+  await cmd("close", { tabId: tab });
+});
+
 // ---------------------------------------------------------------- сценарии панели
 //
 // Настоящая панель (sidebar.html) в отдельном окне: проверяем то, что видит
@@ -447,6 +460,178 @@ scenario("панель: закрыли вкладку — строки нет", 
   await waitUi("строки нет", (rows) => !rows.some((r) => r.tab === tab));
 });
 
+// ---------------------------------------------------------------- микрофон
+//
+// Поддельный микрофон Firefox даёт ровный тон, страница mic.html меряет
+// громкость того, что получила. Громкость сравниваем с исходной по отношению.
+
+const micOn = (s, tab) => s.tabs.find((t) => t.id === tab)?.mic;
+
+async function openCall(query) {
+  const tab = await openPage("mic", query);
+  const st = await waitPage("сайт слышит микрофон", tab, (x) => x.rms > 0.01);
+  await waitFor("Firefox видит микрофон вкладки", (s) => micOn(s, tab)).catch((e) => {
+    throw new Error(e.message + "\n    sharing: " + JSON.stringify(latest.tabs.find((t) => t.id === tab)) + " page: " + JSON.stringify(st));
+  });
+  return { tab, base: st.rms };
+}
+
+scenario("микрофон: тише, выключить, включить — доходит до сайта", async () => {
+  const { tab, base } = await openCall();
+  if (!(await cmd("setMic", { tabId: tab, volume: 0.3 }))) throw new Error("настройка не применилась");
+  await waitPage("в ~0.3 раза тише", tab, (x) => Math.abs(x.rms / base - 0.3) < 0.06);
+  await cmd("setMic", { tabId: tab, muted: true });
+  await waitPage("тишина", tab, (x) => x.rms < 0.001);
+  await cmd("setMic", { tabId: tab, muted: false, volume: 1 });
+  await waitPage("снова как было", tab, (x) => Math.abs(x.rms / base - 1) < 0.1);
+  await cmd("close", { tabId: tab });
+});
+
+scenario("микрофон: для сайта дорожка выглядит настоящей, камера проходит как есть", async () => {
+  const { tab } = await openCall("video=1");
+  const st = await cmd("pageState", { tabId: tab });
+  if (!st.label || !st.deviceId) throw new Error("нет label/deviceId: " + JSON.stringify(st));
+  if (st.kinds.join() !== "audio,video") throw new Error("дорожки: " + st.kinds);
+  await cmd("close", { tabId: tab });
+});
+
+scenario("микрофон: сайт остановил дорожку — микрофон освобождён", async () => {
+  const { tab } = await openCall();
+  await cmd("page", { tabId: tab, fn: "stop" });
+  await waitFor("Firefox больше не видит микрофон", (s) => !micOn(s, tab));
+  if (await cmd("setMic", { tabId: tab, volume: 0.5 })) throw new Error("настройка «применилась» к остановленному микрофону");
+  await cmd("setMic", { tabId: tab, volume: 1 });
+  await cmd("close", { tabId: tab });
+});
+
+scenario("микрофон: клон живёт после остановки оригинала, его остановка освобождает микрофон", async () => {
+  const { tab, base } = await openCall();
+  await cmd("setMic", { tabId: tab, volume: 0.5 });
+  await cmd("page", { tabId: tab, fn: "cloneAndStop" });
+  await sleep(300);
+  await waitPage("клон звучит и слушается громкости", tab, (x) => Math.abs(x.rms / base - 0.5) < 0.08);
+  if (!micOn(latest, tab)) throw new Error("микрофон освобождён раньше времени");
+  await cmd("page", { tabId: tab, fn: "stop" });
+  await waitFor("микрофон освобождён", (s) => !micOn(s, tab));
+  await cmd("close", { tabId: tab });
+});
+
+scenario("микрофон: настройка вкладки переживает перезагрузку страницы", async () => {
+  const { tab, base } = await openCall();
+  await cmd("setMic", { tabId: tab, volume: 0.25 });
+  await cmd("navigate", { tabId: tab, url: page("mic") + "?again=1" });
+  await waitPage("новый захват сразу тише", tab, (x) => x.rms > 0 && Math.abs(x.rms / base - 0.25) < 0.06);
+  await cmd("close", { tabId: tab });
+});
+
+async function waitControl(describe, selector, predicate) {
+  const start = Date.now();
+  let c;
+  while (Date.now() - start < STEP_TIMEOUT_MS) {
+    c = await cmd("uiControl", { selector });
+    if (c && predicate(c)) return c;
+    await sleep(80);
+  }
+  throw new Error(`панель: не дождались: ${describe}\n    регулятор: ${JSON.stringify(c)}`);
+}
+
+scenario("панель: значок микрофона — клик выключает, колесо меняет громкость, конец звонка прячет", async () => {
+  await ensurePanel();
+  const { tab, base } = await openCall();
+  const sel = `[data-key="t${tab}"] .mic`;
+  await waitControl("значок микрофона виден", sel, (c) => c.shown && c.icon === "mic" && !c.muted);
+  await cmd("uiClick", { selector: sel + " .vicon" });
+  await waitControl("значок «выключен»", sel, (c) => c.icon === "mic-off" && c.muted);
+  await waitPage("сайт слышит тишину", tab, (x) => x.rms < 0.001);
+  // Колесо от себя у выключенного — остаётся выключенным; на себя — включает на 5%.
+  await cmd("uiWheel", { selector: sel + " .vicon", deltaY: 100 });
+  await waitControl("включён на 5%", sel, (c) => c.icon === "mic" && c.pct === "5%");
+  await waitPage("сайт слышит ~5%", tab, (x) => Math.abs(x.rms / base - 0.05) < 0.03);
+  await cmd("page", { tabId: tab, fn: "stop" });
+  await waitControl("значок спрятан", sel, (c) => !c.shown);
+  await cmd("close", { tabId: tab });
+});
+
+scenario("панель: у вкладки со звонком видны и микрофон, и звук", async () => {
+  await ensurePanel();
+  for (const query of ["play=1", ""]) {
+    const { tab } = await openCall(query);
+    const row = `[data-key="t${tab}"]`;
+    await waitControl("значок микрофона", row + " .mic", (c) => c.shown);
+    await waitControl("значок звука (" + (query || "тихий звонок") + ")", row + " .audio", (c) => c.shown);
+    await cmd("close", { tabId: tab });
+  }
+}, { needsAudible: true });
+
+// ---------------------------------------------------------------- плагины
+
+const LIKE = "e2e-like/like";
+
+scenario("плагин: кнопка сайта в строке плеера, нажатие доходит до сайта и возвращает новое состояние", async () => {
+  const tab = await openPage("player", "mode=dom&meta=1&handlers=1&like=1");
+  const row = await waitFor("строка с кнопкой плагина", (s) => rowOf(s, tab)?.plugins?.[LIKE] === false && rowOf(s, tab));
+  if ((await cmd("control", { tabId: tab, frameId: row.frameId, action: "plugin:" + LIKE })) !== true) {
+    throw new Error("команда плагина не подтвердилась");
+  }
+  if (rowOf(latest, tab)?.plugins?.[LIKE] !== true) await waitFor("кнопка активна", (s) => rowOf(s, tab)?.plugins?.[LIKE] === true);
+  await waitPage("сайт отметил «нравится»", tab, (st) => st.liked);
+  await cmd("close", { tabId: tab });
+});
+
+scenario("плагин: выключили — кнопки нет; включили — появляется без перезагрузки страницы", async () => {
+  const tab = await openPage("player", "mode=dom&meta=1&handlers=1&like=1");
+  await waitFor("кнопка есть", (s) => rowOf(s, tab)?.plugins?.[LIKE] === false);
+  await cmd("setPlugin", { plugin: "e2e-like", enabled: false });
+  try {
+    await waitFor("кнопки нет", (s) => rowOf(s, tab) && !(LIKE in rowOf(s, tab).plugins));
+    const other = await openPage("player", "mode=dom&meta=1&handlers=1&like=1");
+    await waitFor("строка новой вкладки", (s) => rowOf(s, other)?.playing);
+    await holds("в новой вкладке плагин не подключён", (s) => !(LIKE in (rowOf(s, other)?.plugins || {})), 1000);
+    await cmd("close", { tabId: other });
+  } finally {
+    await cmd("setPlugin", { plugin: "e2e-like", enabled: true });
+  }
+  await waitFor("кнопка вернулась", (s) => rowOf(s, tab)?.plugins?.[LIKE] === false);
+  await cmd("close", { tabId: tab });
+});
+
+scenario("панель: кнопка плагина в строке плеера — значок плагина, нажатие меняет его", async () => {
+  await ensurePanel();
+  const tab = await openPage("player", "mode=dom&meta=1&handlers=1&like=1");
+  await waitUi("строка в центре", (rows) => rows.find((r) => r.tab === tab && r.center));
+  const sel = `.pr[data-tab="${tab}"] [data-key="${LIKE}"]`;
+  await waitControlPlain("кнопка в пульте", sel, (b) => b && !b.on && /like\.svg/.test(b.icon) && b.title === "Нравится");
+  await cmd("uiClick", { selector: sel });
+  await waitControlPlain("кнопка активна", sel, (b) => b && b.on && /liked\.svg/.test(b.icon) && b.title === "Уже нравится");
+  await waitPage("сайт отметил", tab, (st) => st.liked);
+  await cmd("close", { tabId: tab });
+});
+
+const VK = "vk-favorite/add";
+
+for (const [name, query] of [["блок плеера", ""], ["только список треков", "noplayer=1"]]) {
+  scenario(`плагин ВК (${name}): кнопка про играющий трек, а не про первую строку`, async () => {
+    const tab = await openPage("vk", query);
+    const row = await waitFor("кнопка «в мою музыку» не нажата", (s) => rowOf(s, tab)?.plugins?.[VK] === false && rowOf(s, tab));
+    await cmd("control", { tabId: tab, frameId: row.frameId, action: "plugin:" + VK });
+    const st = await waitPage("Seabird добавлен", tab, (x) => x.Seabird === true);
+    if (st["Другой трек"] !== true || st["Ещё один"] !== false) throw new Error("задеты чужие треки: " + JSON.stringify(st));
+    await waitFor("кнопка нажата", (s) => rowOf(s, tab)?.plugins?.[VK] === true);
+    await cmd("close", { tabId: tab });
+  });
+}
+
+async function waitControlPlain(describe, selector, predicate) {
+  const start = Date.now();
+  let b;
+  while (Date.now() - start < STEP_TIMEOUT_MS) {
+    b = await cmd("uiButton", { selector });
+    if (predicate(b)) return b;
+    await sleep(80);
+  }
+  throw new Error(`панель: не дождались: ${describe}\n    кнопка: ${JSON.stringify(b)}`);
+}
+
 // ---------------------------------------------------------------- запуск
 
 // Пустой аудиовыход на время тестов. Возвращает функцию удаления или null.
@@ -474,6 +659,15 @@ function prepare(nullSink) {
   for (const item of SHIP) fs.cpSync(path.join(ROOT, item), path.join(ext, item), { recursive: true });
   fs.copyFileSync(path.join(__dirname, "hook.js"), path.join(ext, "e2e-hook.js"));
   fs.writeFileSync(path.join(ext, "e2e-config.js"), `const E2E_ORIGIN = ${JSON.stringify(origin)};\n`);
+  // Тестовый плагин — как настоящий, в папке plugins/ копии расширения.
+  fs.cpSync(path.join(__dirname, "plugin"), path.join(ext, "plugins", "e2e-like"), { recursive: true });
+  const index = JSON.parse(fs.readFileSync(path.join(ext, "plugins", "index.json"), "utf8"));
+  fs.writeFileSync(path.join(ext, "plugins", "index.json"), JSON.stringify([...index, "e2e-like"]));
+  // Плагин ВК — ещё и на тестовом сервере (страница vk.html повторяет разметку ВК).
+  const vkJson = path.join(ext, "plugins", "vk-favorite", "plugin.json");
+  const vk = JSON.parse(fs.readFileSync(vkJson, "utf8"));
+  vk.matches.push("http://127.0.0.1/*");
+  fs.writeFileSync(vkJson, JSON.stringify(vk));
   const manifest = JSON.parse(fs.readFileSync(path.join(ext, "manifest.json"), "utf8"));
   manifest.background.scripts.push("e2e-config.js", "e2e-hook.js");
   fs.writeFileSync(path.join(ext, "manifest.json"), JSON.stringify(manifest, null, 2));
@@ -489,6 +683,11 @@ function prepare(nullSink) {
       ["media.autoplay.blocking_policy", 0],
       ["media.autoplay.block-webaudio", false],
       ["media.cubeb.force_null_context", !nullSink],
+      // Микрофон и камера — поддельные (тон и картинка), без запроса разрешения.
+      ["media.navigator.streams.fake", true],
+      ["media.navigator.permission.fake", true],
+      ["permissions.default.microphone", 1],
+      ["permissions.default.camera", 1],
       ["browser.shell.checkDefaultBrowser", false],
       ["browser.startup.homepage_override.mstone", "ignore"],
       ["datareporting.policy.dataSubmissionEnabled", false],

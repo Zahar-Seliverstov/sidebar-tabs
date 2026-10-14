@@ -21,7 +21,14 @@
       await post("/hook/state", {
         at: Date.now(),
         sessions: mediaList(),
-        tabs: tabs.map((t) => ({ id: t.id, url: t.url, audible: !!t.audible, status: t.status, discarded: !!t.discarded })),
+        tabs: tabs.map((t) => ({
+          id: t.id,
+          url: t.url,
+          audible: !!t.audible,
+          status: t.status,
+          discarded: !!t.discarded,
+          mic: !!(t.sharingState && t.sharingState.microphone),
+        })),
       });
     } catch (err) {
       await post("/hook/error", { message: String(err) });
@@ -92,6 +99,18 @@
           note: panel().document.getElementById("deck-note").hidden ? "" : panel().document.getElementById("deck-note-text").textContent,
           pending: panel().document.getElementById("player").classList.contains("pending"),
         }));
+      case "uiControl": {
+        // Регулятор во строке вкладки: виден ли, значок, проценты.
+        const el = panel().document.querySelector(cmd.selector);
+        if (!el) return null;
+        return {
+          shown: panel().getComputedStyle(el).display !== "none",
+          icon: el.querySelector(".vicon").dataset.icon,
+          muted: el.classList.contains("muted"),
+          blocked: el.classList.contains("blocked"),
+          pct: el.querySelector(".vpct").textContent,
+        };
+      }
       case "uiClick": {
         const el = panel().document.querySelector(cmd.selector);
         if (!el) throw new Error("нет элемента " + cmd.selector);
@@ -105,6 +124,15 @@
         el.dispatchEvent(new view.WheelEvent("wheel", { deltaY: cmd.deltaY, deltaMode: 0, bubbles: true, cancelable: true }));
         return true;
       }
+      case "setPlugin":
+        return setPluginEnabled(cmd.plugin, cmd.enabled);
+      case "uiButton": {
+        const el = panel().document.querySelector(cmd.selector);
+        if (!el) return null;
+        return { on: el.classList.contains("on"), icon: el.style.getPropertyValue("--icon"), title: el.title };
+      }
+      case "setMic":
+        return setTabMic(cmd.tabId, cmd);
       case "tabVolume":
         return tabVolumes.has(cmd.tabId) ? tabVolumes.get(cmd.tabId) : 1;
       default:

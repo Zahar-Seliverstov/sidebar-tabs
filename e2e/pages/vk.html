@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Тестовый ВК</title>
+<script src="tone.js"></script>
+<body>
+<script>
+"use strict";
+// Разметка как у музыки ВК: кнопка «в мою музыку» — data-testid=MusicAudio_ToggleOwning,
+// состояние — data-testactive; такая же кнопка у каждой строки списка.
+// Вся страница обёрнута в блок с «Player» в классе (худший случай для плагина).
+// Параметры: noplayer=1 — блока плеера нет, только список.
+const q = new URLSearchParams(location.search);
+const TRACKS = [["Другой трек", "Кто-то", true], ["Seabird", "Alessi Brothers", false], ["Ещё один", "Кто-то", false]];
+
+function toggle(added) {
+  const b = document.createElement("button");
+  b.dataset.testid = "MusicAudio_ToggleOwning";
+  b.dataset.testactive = String(added);
+  b.innerHTML = `<span>${added ? "Удалить из моей музыки" : "Добавить в мою музыку"}</span>`;
+  // Как у ВК: ответ сервера приходит не сразу.
+  b.onclick = () => setTimeout(() => {
+    const on = b.dataset.testactive !== "true";
+    for (const x of document.querySelectorAll(`[data-track="${b.dataset.track}"]`)) x.dataset.testactive = String(on);
+  }, 150);
+  return b;
+}
+
+const page = document.createElement("div");
+page.className = "MusicPlayerPage vkit-x";
+if (q.get("noplayer") !== "1") {
+  const player = document.createElement("div");
+  player.dataset.testid = "MusicPlayer";
+  player.innerHTML = "<div><span>Seabird</span> — <span>Alessi Brothers</span></div>";
+  const t = toggle(false);
+  t.dataset.track = "Seabird";
+  player.append(t);
+  page.append(player);
+}
+const list = document.createElement("div");
+for (const [title, artist, added] of TRACKS) {
+  const row = document.createElement("div");
+  row.dataset.testid = "MusicPlaylistTrack";
+  row.innerHTML = `<div><div><span>${title}</span><span>${artist}</span></div></div>`;
+  const t = toggle(added);
+  t.dataset.track = title;
+  row.firstChild.append(t);
+  list.append(row);
+}
+page.append(list);
+document.body.append(page);
+
+window.api = {
+  state: () => Object.fromEntries([...document.querySelectorAll("[data-track]")].map((b) => [b.dataset.track, b.dataset.testactive === "true"])),
+};
+
+const player = new Audio(toneUrl(120, 440));
+navigator.mediaSession.metadata = new MediaMetadata({ title: "Seabird", artist: "Alessi Brothers" });
+player.play();
+</script>

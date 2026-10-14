@@ -389,8 +389,14 @@ button {
   transition: background-color 0.18s, color 0.12s, box-shadow 0.18s;
 }
 
-.audio:not(.shown):not([data-open]) {
+.audio:not(.shown):not([data-open]),
+.mic:not(.shown):not([data-open]) {
   display: none;
+}
+
+/* Микрофон пишет — значок в цвете акцента, выключен — красный (.muted). */
+.mic {
+  color: var(--accent);
 }
 
 .vexp.playing {
@@ -1081,9 +1087,13 @@ button {
   transform: scale(0.9);
 }
 
-.pl-btn[data-icon]::before {
-  width: 13px;
-  height: 13px;
+/* Значки строк плеера — 12 px, не 13: строки барабана наклонены 3D-трансформацией,
+   и при 13 px Firefox (WebRender) рисовал по правому и нижнему краю маски значка
+   тонкую линию. 12 px (как у паузы) — чисто. */
+.pl-btn[data-icon]::before,
+.pr-vol .vicon[data-icon]::before {
+  width: 12px;
+  height: 12px;
 }
 
 /* Маленькая пауза — у боковых строк барабана; у центральной её роль
@@ -1465,6 +1475,28 @@ button {
   display: none;
 }
 
+/* ---------- кнопки плагинов в строке плеера (значок — из папки плагина) ---------- */
+
+.pr-plugins {
+  flex: none;
+  display: flex;
+}
+
+.pr-plugin.on {
+  color: var(--accent);
+}
+
+/* ---------- пункт меню с галочкой (плагины) ---------- */
+
+.mi .check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  display: inline-flex;
+  color: var(--accent);
+}
+
 /* ---------- иконки Lucide (https://lucide.dev, ISC — icons/lucide/LICENSE) ----------
    Иконка — маска поверх currentColor: цвет берётся из текста, поэтому
    одна и та же иконка работает в любой теме и на hover. */
@@ -1484,6 +1516,10 @@ button {
 [data-icon="volume-1"] { --icon: url("../icons/lucide/volume-1.svg"); }
 [data-icon="volume-2"] { --icon: url("../icons/lucide/volume-2.svg"); }
 [data-icon="volume-x"] { --icon: url("../icons/lucide/volume-x.svg"); }
+[data-icon="puzzle"] { --icon: url("../icons/lucide/puzzle.svg"); }
+[data-icon="check"] { --icon: url("../icons/lucide/check.svg"); }
+[data-icon="mic"] { --icon: url("../icons/lucide/mic.svg"); }
+[data-icon="mic-off"] { --icon: url("../icons/lucide/mic-off.svg"); }
 [data-icon="play"] { --icon: url("../icons/lucide/play.svg"); }
 [data-icon="pause"] { --icon: url("../icons/lucide/pause.svg"); }
 [data-icon="play-fill"] { --icon: url("../icons/lucide/play-fill.svg"); }

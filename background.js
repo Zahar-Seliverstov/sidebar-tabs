@@ -463,6 +463,214 @@ browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   tabVolumes.delete(removedTabId);
 });
 
+// ---------------------------------------------------------------- микрофон
+//
+// Громкость и выключение микрофона вкладки применяет content/mic.js (там же —
+// как это устроено). Здесь — только настройки: tabId → { volume, muted },
+// пока вкладка открыта. Новый захват в любом фрейме спрашивает настройку
+// сам ("micGet"), поэтому она переживает и перезагрузку, и новый звонок.
+
+const micSettings = new Map();
+
+function micOf(tabId) {
+  return micSettings.get(tabId) || { volume: 1, muted: false };
+}
+
+// Ответ — применилось ли: хоть один фрейм вкладки держит живой микрофон.
+async function setTabMic(tabId, change) {
+  const prev = micOf(tabId);
+  const next = {
+    volume: change && change.volume !== undefined ? clampVolume(change.volume) : prev.volume,
+    muted: change && change.muted !== undefined ? !!change.muted : prev.muted,
+  };
+  if (next.volume >= 1 && !next.muted) micSettings.delete(tabId);
+  else micSettings.set(tabId, next);
+  try {
+    const reply = await browser.tabs.sendMessage(tabId, { type: "micSet", ...next });
+    return !!(reply && reply.live);
+  } catch (err) {
+    return false;
+  }
+}
+
+browser.tabs.onRemoved.addListener((tabId) => micSettings.delete(tabId));
+browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  if (!micSettings.has(removedTabId)) return;
+  micSettings.set(addedTabId, micSettings.get(removedTabId));
+  micSettings.delete(removedTabId);
+});
+
+// ---------------------------------------------------------------- плагины
+//
+// Плагин — папка plugins/<id>/ внутри расширения (список — plugins/index.json):
+//
+//   plugin.json  { name, description, matches: [шаблоны URL], js: [файлы],
+//                  allFrames?, enabled? (по умолчанию включён),
+//                  buttons: [{ id, title, activeTitle?, icon, activeIcon? }] }
+//   page.js      поведение кнопок через SidebarTabs (см. content/plugin-api.js)
+//
+// Кнопки встают в пульт плеера, когда в строке плеера вкладка с сайта
+// плагина. Включённые плагины подключаются через contentScripts.register —
+// только на своих сайтах; выключенные ничего не стоят. Выключение не
+// выгружает уже подключённую копию (это невозможно) — её кнопки просто
+// перестают показываться до перезагрузки страницы.
+
+const PLUGIN_ID = /^[a-z0-9-]{1,40}$/;
+const PLUGINS_KEY = "pluginsEnabled";
+// id → { id, name, description, matches, js, allFrames, buttons, enabled, handle }
+const plugins = new Map();
+let pluginsReady = null;
+
+function pluginUrl(id, file) {
+  return browser.runtime.getURL(`plugins/${id}/${file}`);
+}
+
+// plugin.json пишет автор плагина — проверяем форму, лишнее отбрасываем.
+function parsePlugin(id, raw) {
+  const str = (v) => (typeof v === "string" ? v.slice(0, 200) : "");
+  const file = (v) => typeof v === "string" && /^[\w.-]+$/.test(v);
+  if (!raw || typeof raw !== "object") throw new Error("plugin.json не объект");
+  const matches = Array.isArray(raw.matches) ? raw.matches.filter((m) => typeof m === "string") : [];
+  const js = Array.isArray(raw.js) ? raw.js.filter(file) : [];
+  if (!matches.length || !js.length) throw new Error("нужны matches и js");
+  const buttons = (Array.isArray(raw.buttons) ? raw.buttons : [])
+    .filter((b) => b && PLUGIN_ID.test(b.id) && file(b.icon))
+    .map((b) => ({
+      key: id + "/" + b.id,
+      title: str(b.title) || b.id,
+      activeTitle: str(b.activeTitle) || str(b.title) || b.id,
+      icon: pluginUrl(id, b.icon),
+      activeIcon: pluginUrl(id, file(b.activeIcon) ? b.activeIcon : b.icon),
+    }));
+  return {
+    id,
+    name: str(raw.name) || id,
+    description: str(raw.description),
+    matches,
+    js,
+    allFrames: raw.allFrames === true,
+    defaultEnabled: raw.enabled !== false,
+    buttons,
+    enabled: false,
+    handle: null,
+  };
+}
+
+async function loadPlugins() {
+  const index = await (await fetch(browser.runtime.getURL("plugins/index.json"))).json();
+  const stored = (await browser.storage.local.get(PLUGINS_KEY))[PLUGINS_KEY] || {};
+  for (const id of Array.isArray(index) ? index : []) {
+    if (!PLUGIN_ID.test(id) || plugins.has(id)) continue;
+    try {
+      const p = parsePlugin(id, await (await fetch(pluginUrl(id, "plugin.json"))).json());
+      plugins.set(id, p);
+      const on = typeof stored[id] === "boolean" ? stored[id] : p.defaultEnabled;
+      // И в уже открытые вкладки: фон стартует и после установки/обновления
+      // расширения, когда страницы сайта давно открыты (onInstalled на это
+      // полагаться нельзя — при перезапуске расширения он не приходит).
+      if (on) await enablePlugin(p, true);
+    } catch (err) {
+      console.error(`[sidebar-tabs] plugin ${id} not loaded`, err);
+    }
+  }
+}
+
+function pluginScripts(p) {
+  return ["/content/plugin-api.js", ...p.js.map((f) => `/plugins/${p.id}/${f}`)];
+}
+
+// intoOpenTabs — включили из панели: подключаем и в уже открытые вкладки.
+async function enablePlugin(p, intoOpenTabs) {
+  if (p.enabled) return;
+  p.enabled = true;
+  p.handle = await browser.contentScripts.register({
+    matches: p.matches,
+    js: pluginScripts(p).map((file) => ({ file })),
+    runAt: "document_idle",
+    allFrames: p.allFrames,
+  });
+  if (intoOpenTabs) await injectPluginIntoOpenTabs(p);
+}
+
+// Уже открытые вкладки сайта плагина: contentScripts.register действует
+// только на страницы, загруженные после него. Подключиться дважды плагин
+// не может: код плагина SidebarTabs выполняет один раз на страницу.
+async function injectPluginIntoOpenTabs(p) {
+  const tabs = await browser.tabs.query({ url: p.matches, discarded: false });
+  for (const t of tabs) {
+    // Копия, выключенная раньше, ещё жива — достаточно включить её обратно.
+    browser.tabs.sendMessage(t.id, { type: "pluginEnabled", id: p.id, enabled: true }).catch(() => {});
+    try {
+      const [loaded] = await browser.tabs.executeScript(t.id, {
+        code: `!!(window.__mtbPlugins && window.__mtbPlugins.loaded.has(${JSON.stringify(p.id)}))`,
+      });
+      if (loaded) continue;
+      for (const file of pluginScripts(p)) {
+        await browser.tabs.executeScript(t.id, { file, allFrames: p.allFrames });
+      }
+    } catch (err) {
+      // Вкладка закрылась или страница служебная — пропускаем.
+    }
+  }
+}
+
+async function disablePlugin(p) {
+  if (!p.enabled) return;
+  p.enabled = false;
+  if (p.handle) await p.handle.unregister().catch(() => {});
+  p.handle = null;
+  const tabs = await browser.tabs.query({ url: p.matches });
+  for (const t of tabs) browser.tabs.sendMessage(t.id, { type: "pluginEnabled", id: p.id, enabled: false }).catch(() => {});
+}
+
+async function setPluginEnabled(id, enabled) {
+  await pluginsReady;
+  const p = plugins.get(id);
+  if (!p) return false;
+  if (enabled) await enablePlugin(p, true);
+  else await disablePlugin(p);
+  const stored = (await browser.storage.local.get(PLUGINS_KEY))[PLUGINS_KEY] || {};
+  stored[id] = !!enabled;
+  await browser.storage.local.set({ [PLUGINS_KEY]: stored });
+  // Кнопки выключенного плагина исчезают из плеера сразу.
+  for (const s of mediaSessions.values()) s.plugins = sanitizePluginButtons(s.plugins);
+  scheduleMediaBroadcast();
+  return true;
+}
+
+function pluginList() {
+  return [...plugins.values()].map((p) => ({
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    enabled: p.enabled,
+    buttons: p.buttons,
+  }));
+}
+
+function findPluginButton(key) {
+  const p = plugins.get(String(key).split("/")[0]);
+  return p && p.enabled ? p.buttons.find((b) => b.key === key) || null : null;
+}
+
+function isPluginAction(action) {
+  return typeof action === "string" && action.startsWith("plugin:") && !!findPluginButton(action.slice(7));
+}
+
+// От страницы: только кнопки включённых плагинов, значения — true/false.
+function sanitizePluginButtons(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const key of Object.keys(raw).slice(0, 20)) {
+    if (findPluginButton(key)) out[key] = raw[key] === true;
+  }
+  return out;
+}
+
+pluginsReady = browser.contentScripts
+  ? loadPlugins().catch((err) => console.error("[sidebar-tabs] plugins not loaded", err))
+  : Promise.resolve();
+
 // ---------------------------------------------------------------- плеер
 //
 // Что показывает плеер в панели. Два источника, и оба проверяемые:
@@ -551,6 +759,7 @@ function sanitizeMedia(state) {
     canSeek: state.canSeek === true,
     late: state.late === true,
     live: state.live === true && duration <= 0,
+    plugins: sanitizePluginButtons(state.plugins),
     position:
       duration > 0
         ? {
@@ -597,6 +806,7 @@ function mediaChanged(prev, next) {
     if (prev[k] !== next[k]) return true;
   }
   if (prev.actions.join() !== next.actions.join()) return true;
+  if (JSON.stringify(prev.plugins) !== JSON.stringify(next.plugins)) return true;
   const a = prev.position;
   const b = next.position;
   if (!a || !b) return a !== b;
@@ -640,6 +850,7 @@ function mediaList(now = Date.now()) {
       canPlay: false,
       canSeek: false,
       position: null,
+      plugins: {},
       playedAt: a.playedAt,
     });
   }
@@ -746,7 +957,8 @@ async function verifyMedia(tabId) {
 async function mediaControl(msg) {
   const key = msg.tabId + ":" + msg.frameId;
   const s = mediaSessions.get(key);
-  const action = msg.action === "toggle" || MEDIA_ACTIONS.includes(msg.action) ? msg.action : null;
+  const action =
+    msg.action === "toggle" || MEDIA_ACTIONS.includes(msg.action) || isPluginAction(msg.action) ? msg.action : null;
   if (!s || !action) {
     // Панель могла показать то, чего уже нет, — пусть получит правду.
     scheduleMediaBroadcast();
@@ -822,8 +1034,10 @@ async function injectMediaIntoOpenTabs() {
     const tabs = await browser.tabs.query({ discarded: false, url: ["http://*/*", "https://*/*"] });
     await Promise.allSettled(
       tabs.map((t) =>
-        browser.tabs.executeScript(t.id, { file: "/content/media.js", allFrames: true, matchAboutBlank: true, runAt: "document_end" })
-      )
+        ["/content/media.js", "/content/mic.js"].map((file) =>
+          browser.tabs.executeScript(t.id, { file, allFrames: true, matchAboutBlank: true, runAt: "document_end" })
+        )
+      ).flat()
     );
   } catch (err) {
     console.error("[sidebar-tabs] failed to inject media script", err);
@@ -836,6 +1050,11 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || typeof msg !== "object") return undefined;
   if (msg.type === "getVolumes") return Promise.resolve(Object.fromEntries(tabVolumes));
   if (msg.type === "setVolume" && Number.isInteger(msg.tabId)) return setTabVolume(msg.tabId, msg.volume);
+  if (msg.type === "getMic") return Promise.resolve(Object.fromEntries(micSettings));
+  if (msg.type === "setMic" && Number.isInteger(msg.tabId)) return setTabMic(msg.tabId, msg);
+  if (msg.type === "micGet") return Promise.resolve(sender.tab ? micOf(sender.tab.id) : null);
+  if (msg.type === "getPlugins") return pluginsReady.then(pluginList);
+  if (msg.type === "setPlugin" && typeof msg.id === "string") return setPluginEnabled(msg.id, msg.enabled === true);
   if (msg.type === "media") return void onMediaMessage(msg, sender);
   // Панель открылась — сначала сверка, потом ответ: никаких «призраков».
   if (msg.type === "getMedia") return verifyMedia().then(mediaList, mediaList);
@@ -1069,6 +1288,12 @@ if (typeof module !== "undefined" && module.exports) {
     _faviconsLoaded: faviconsLoaded,
     setTabVolume,
     clampVolume,
+    setTabMic,
+    _getMicSettings: () => micSettings,
+    parsePlugin,
+    sanitizePluginButtons,
+    isPluginAction,
+    _getPlugins: () => plugins,
     volumeScript,
     _getTabVolumes: () => tabVolumes,
     onMediaMessage,
@@ -1099,6 +1324,8 @@ if (typeof module !== "undefined" && module.exports) {
       pendingSince = null;
       favicons = new Map();
       tabVolumes.clear();
+      micSettings.clear();
+      plugins.clear();
       mediaSessions.clear();
       checking.clear();
       audibleTabs.clear();

@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Тестовый звонок</title>
+<script src="tone.js"></script>
+<script>
+"use strict";
+// Захватывает микрофон (в e2e — поддельный: Firefox отдаёт тон) и меряет
+// громкость того, что получил сайт. Параметры: video=1 — ещё и камера,
+// play=1 — ещё и играет звук собеседника.
+const q = new URLSearchParams(location.search);
+let stream = null;
+let copy = null;
+let rms = 0;
+let error = "";
+const ctx = new AudioContext();
+const an = ctx.createAnalyser();
+an.fftSize = 2048;
+let source = null;
+
+// Анализатор слушает текущий поток сайта.
+function listen() {
+  if (source) source.disconnect();
+  source = ctx.createMediaStreamSource(stream);
+  source.connect(an);
+}
+
+async function start() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: q.get("video") === "1" });
+    listen();
+    const buf = new Float32Array(an.fftSize);
+    setInterval(() => {
+      an.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const x of buf) sum += x * x;
+      rms = Math.sqrt(sum / buf.length);
+    }, 50);
+  } catch (e) {
+    error = String(e);
+  }
+}
+
+window.api = {
+  state: () => {
+    const t = stream && stream.getAudioTracks()[0];
+    return {
+      error,
+      rms,
+      label: t ? t.label : null,
+      deviceId: t ? t.getSettings().deviceId || "" : null,
+      readyState: t ? t.readyState : null,
+      kinds: stream ? stream.getTracks().map((x) => x.kind) : [],
+    };
+  },
+  stop: () => stream.getTracks().forEach((t) => t.stop()),
+  // Сайт клонирует дорожку и останавливает оригинал: клон должен звучать.
+  cloneAndStop: () => {
+    copy = stream.getAudioTracks()[0].clone();
+    stream.getAudioTracks()[0].stop();
+    stream = new MediaStream([copy]);
+    listen();
+  },
+};
+start();
+if (q.get("play") === "1") {
+  const voice = new Audio(toneUrl(120, 440));
+  voice.loop = true;
+  voice.play();
+}
+</script>
+<body>звонок</body>
