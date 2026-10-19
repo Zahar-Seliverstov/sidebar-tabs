@@ -14,6 +14,12 @@
 
 const STORAGE_KEY = "lastSession";
 
+// Общая логика: в браузере эти файлы подключены в манифесте раньше фона,
+// в node (тесты) — берутся через require.
+const inNode = typeof module !== "undefined" && module.exports;
+const Settings = inNode ? require("./shared/settings.js") : globalThis.SidebarSettings;
+const Model = inNode ? require("./sidebar/model.js") : { duplicatesToClose, stepRate, DEFAULT_STORE };
+
 // Обычный дебаунс: ждём затишья SAVE_DEBOUNCE_MS после последнего события.
 // SAVE_MAX_WAIT_MS — страховка от сайтов, которые шлют события непрерывно
 // (например часто дёргают onUpdated) — без неё обычный дебаунс с постоянным
@@ -60,6 +66,10 @@ function isRestorableUrl(url) {
   }
 }
 
+function isContainerStore(id) {
+  return typeof id === "string" && id !== "" && id !== Model.DEFAULT_STORE && id !== "firefox-private";
+}
+
 function looksLikeFreshUrl(url) {
   return url === "about:newtab" || url === "about:blank" || url === "about:home";
 }
@@ -102,6 +112,9 @@ async function captureWindow(win) {
     .filter((tab) => isRestorableUrl(tab.url) && !isTransientTab(tab))
     .map((tab) => {
       const entry = { url: tab.url, title: tab.title, pinned: tab.pinned, active: tab.active };
+      // Контейнер Firefox: без него вкладка вернулась бы с чужими куки (не
+      // в том аккаунте). Обычные вкладки поле не получают — снимок не растёт.
+      if (isContainerStore(tab.cookieStoreId)) entry.cookieStoreId = tab.cookieStoreId;
 
       const meta = tab.groupId !== undefined && tab.groupId !== -1 ? groupMetaByFirefoxId.get(tab.groupId) : undefined;
       if (meta) {
@@ -485,6 +498,8 @@ async function setTabMic(tabId, change) {
   };
   if (next.volume >= 1 && !next.muted) micSettings.delete(tabId);
   else micSettings.set(tabId, next);
+  // Микрофон меняют не только из панели (горячая клавиша) — панели узнают.
+  browser.runtime.sendMessage({ type: "micState", mic: Object.fromEntries(micSettings) }).catch(() => {});
   try {
     const reply = await browser.tabs.sendMessage(tabId, { type: "micSet", ...next });
     return !!(reply && reply.live);
@@ -702,7 +717,8 @@ const MEDIA_ART_MAX = 64 * 1024;
 const MEDIA_ACTIONS = ["play", "pause", "previoustrack", "nexttrack", "seekto", "seekbackward", "seekforward", "stop"];
 const MEDIA_BROADCAST_MS = 50;
 const MEDIA_DRIFT_S = 1.5;
-const MEDIA_VISIBLE_KEYS = ["windowId", "title", "artist", "album", "artwork", "playing", "pageMuted", "canPlay", "canSeek", "late", "live"];
+const MEDIA_VISIBLE_KEYS = ["windowId", "title", "artist", "album", "artwork", "playing", "pageMuted", "canPlay", "canSeek", "late", "live", "rate", "canRate"];
+const RATE_LIMITS = [0.0625, 16];
 const MEDIA_STALE_MS = 25000;
 const MEDIA_DEAD_MS = 90000;
 // Ответ на команду content-скрипт шлёт, дождавшись реакции сайта (до 1,5 с).
@@ -759,6 +775,8 @@ function sanitizeMedia(state) {
     canSeek: state.canSeek === true,
     late: state.late === true,
     live: state.live === true && duration <= 0,
+    rate: Math.min(RATE_LIMITS[1], Math.max(RATE_LIMITS[0], finiteOr(state.rate, 1))),
+    canRate: state.canRate === true,
     plugins: sanitizePluginButtons(state.plugins),
     position:
       duration > 0
@@ -849,6 +867,8 @@ function mediaList(now = Date.now()) {
       actions: [],
       canPlay: false,
       canSeek: false,
+      rate: 1,
+      canRate: false,
       position: null,
       plugins: {},
       playedAt: a.playedAt,
@@ -957,8 +977,12 @@ async function verifyMedia(tabId) {
 async function mediaControl(msg) {
   const key = msg.tabId + ":" + msg.frameId;
   const s = mediaSessions.get(key);
+  const rate = finiteOr(msg.rate, NaN);
   const action =
-    msg.action === "toggle" || MEDIA_ACTIONS.includes(msg.action) || isPluginAction(msg.action) ? msg.action : null;
+    msg.action === "toggle" || MEDIA_ACTIONS.includes(msg.action) || isPluginAction(msg.action) ||
+    (msg.action === "rate" && rate >= RATE_LIMITS[0] && rate <= RATE_LIMITS[1])
+      ? msg.action
+      : null;
   if (!s || !action) {
     // Панель могла показать то, чего уже нет, — пусть получит правду.
     scheduleMediaBroadcast();
@@ -966,7 +990,11 @@ async function mediaControl(msg) {
   }
   try {
     const reply = await withTimeout(
-      browser.tabs.sendMessage(s.tabId, { type: "mediaControl", action, seekTime: finiteOr(msg.seekTime, undefined) }, { frameId: s.frameId }),
+      browser.tabs.sendMessage(
+        s.tabId,
+        { type: "mediaControl", action, seekTime: finiteOr(msg.seekTime, undefined), ...(action === "rate" ? { rate } : {}) },
+        { frameId: s.frameId }
+      ),
       MEDIA_CONTROL_TIMEOUT_MS
     );
     applyMediaState({ id: s.tabId, windowId: s.windowId }, s.frameId, reply && reply.state);
@@ -1046,6 +1074,236 @@ async function injectMediaIntoOpenTabs() {
 
 if (browser.runtime.onInstalled) browser.runtime.onInstalled.addListener(injectMediaIntoOpenTabs);
 
+// ---------------------------------------------------------------- настройки
+//
+// Меняет их страница настроек (options/), читают фон и панели — каждый сам
+// из storage, с подпиской на изменения. См. shared/settings.js.
+
+let settings = Settings.normalizeSettings(null);
+
+const settingsReady = browser.storage.local
+  .get(Settings.SETTINGS_KEY)
+  .then((stored) => applySettings(stored && stored[Settings.SETTINGS_KEY]))
+  .catch((err) => console.error("[sidebar-tabs] failed to read settings", err));
+
+function applySettings(raw) {
+  const prevRules = JSON.stringify(settings.groupRules);
+  settings = Settings.normalizeSettings(raw);
+  if (JSON.stringify(settings.groupRules) !== prevRules) return seedRuleMatches();
+  return undefined;
+}
+
+if (browser.storage.onChanged) {
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[Settings.SETTINGS_KEY]) applySettings(changes[Settings.SETTINGS_KEY].newValue);
+  });
+}
+
+// ---------------------------------------------------------------- автогруппировка
+//
+// Правило (адрес → название группы, см. shared/settings.js) срабатывает,
+// когда вкладка ОТКРЫВАЕТ подходящую страницу: на переходе, после которого
+// вкладке подходит другое правило, чем до него. Поэтому:
+//   - вкладку, которую вынули из группы руками, правило обратно не тянет,
+//     пока она ходит по тому же сайту;
+//   - вкладки, открытые до появления правила, не трогаются (для них есть
+//     «Применить к открытым вкладкам» на странице настроек);
+//   - вкладка уже в группе (своей или той, куда Firefox поместил ссылку из
+//     группы) остаётся, где есть; закреплённые не группируются.
+// Группа ищется по названию в окне вкладки, нет такой — создаётся. Операции
+// идут по одной: две вкладки одного сайта, открытые разом, попадают в одну
+// группу, а не создают две одинаковые.
+
+// tabId → ключ правила, подходившего вкладке в последний раз ("" — никакое).
+const ruleMatches = new Map();
+let ruleQueue = Promise.resolve();
+
+function hasTabGroups() {
+  return typeof browser.tabs.group === "function" && !!browser.tabGroups;
+}
+
+function ruleKey(url) {
+  const rule = Settings.matchGroupRule(settings.groupRules, url);
+  return rule ? rule.pattern + "\n" + rule.group : "";
+}
+
+// Запомнить, что подходит открытым вкладкам сейчас, ничего не делая.
+async function seedRuleMatches() {
+  ruleMatches.clear();
+  if (settings.groupRules.length === 0) return;
+  try {
+    for (const tab of await browser.tabs.query({})) ruleMatches.set(tab.id, ruleKey(tab.url));
+  } catch (err) {
+    console.error("[sidebar-tabs] failed to read tabs for group rules", err);
+  }
+}
+
+// created — вкладка только что создана. Вкладка, которой мы ещё не знаем
+// и которая не новая (была открыта до запуска фона), только запоминается:
+// иначе при старте браузера правила разложили бы всю прошлую сессию.
+function onTabUrl(tab, created) {
+  if (!tab || !Number.isInteger(tab.id) || settings.groupRules.length === 0) return;
+  const known = ruleMatches.has(tab.id);
+  const prev = ruleMatches.get(tab.id);
+  const key = ruleKey(tab.url);
+  ruleMatches.set(tab.id, key);
+  // Восстановление сессии воссоздаёт группы само — не вмешиваемся.
+  if (!key || isRestoring || (known ? key === prev : !created)) return;
+  enqueueGroupRule(tab.id);
+}
+
+function enqueueGroupRule(tabId) {
+  const run = ruleQueue.then(() => applyGroupRule(tabId));
+  ruleQueue = run.catch(() => {});
+  return run;
+}
+
+// Поместить вкладку в группу её правила. Состояние берётся свежим: пока
+// ждали очереди, вкладку могли закрыть, сгруппировать или увести.
+async function applyGroupRule(tabId) {
+  if (!hasTabGroups()) return false;
+  try {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.pinned || (tab.groupId !== undefined && tab.groupId !== -1)) return false;
+    const rule = Settings.matchGroupRule(settings.groupRules, tab.url);
+    if (!rule) return false;
+    const groups = await browser.tabGroups.query({ windowId: tab.windowId });
+    const existing = Settings.findRuleGroup(groups, rule);
+    // Пока ждали tabGroups.query, вкладку могли сгруппировать без нас:
+    // панель, открывая страницу в другом контейнере, создаёт вкладку
+    // и сразу кладёт её в группу исходной — правило не должно её уводить.
+    // Поэтому прямо перед tabs.group смотрим на вкладку ещё раз. Гонку это
+    // сужает до одного шага, но не убирает: между tabs.get и tabs.group
+    // вкладку всё равно могут сгруппировать, а атомарного «сгруппировать,
+    // если ещё не в группе» у API нет.
+    if (!(await stillUngrouped(tab.id))) return false;
+    if (existing) {
+      await browser.tabs.group({ tabIds: [tab.id], groupId: existing.id });
+      return true;
+    }
+    // Как и при восстановлении: в createProperties — только windowId,
+    // название и цвет ставятся отдельно.
+    const groupId = await browser.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } });
+    await browser.tabGroups.update(groupId, { title: rule.group, color: rule.color });
+    return true;
+  } catch (err) {
+    // Вкладку закрыли, окно не умеет группы (всплывающее) — не страшно.
+    return false;
+  }
+}
+
+// Вкладка всё ещё не в группе и не закреплена (свежие данные из Firefox).
+async function stillUngrouped(tabId) {
+  const tab = await browser.tabs.get(tabId);
+  return !tab.pinned && (tab.groupId === undefined || tab.groupId === -1);
+}
+
+// «Применить к открытым вкладкам»: все незакреплённые вкладки вне групп.
+// Ответ — сколько вкладок разложено по группам.
+async function applyGroupRulesToOpenTabs() {
+  await settingsReady;
+  // Страница настроек шлёт сообщение сразу после записи правил, а
+  // storage.onChanged может прийти позже него — читаем правила сами.
+  // Если они поменялись, applySettings заново запоминает, что подходит
+  // открытым вкладкам (seedRuleMatches), — дожидаемся и этого.
+  try {
+    const stored = await browser.storage.local.get(Settings.SETTINGS_KEY);
+    await applySettings(stored && stored[Settings.SETTINGS_KEY]);
+  } catch (err) {
+    console.error("[sidebar-tabs] failed to read settings", err);
+  }
+  if (!hasTabGroups() || settings.groupRules.length === 0) return 0;
+  const tabs = await browser.tabs.query({ pinned: false });
+  let moved = 0;
+  for (const tab of tabs) {
+    if (tab.groupId !== undefined && tab.groupId !== -1) continue;
+    if (!Settings.matchGroupRule(settings.groupRules, tab.url)) continue;
+    if (await enqueueGroupRule(tab.id)) moved++;
+  }
+  return moved;
+}
+
+browser.tabs.onUpdated.addListener(
+  (tabId, changeInfo, tab) => {
+    if (changeInfo.url !== undefined) onTabUrl(tab, false);
+  },
+  { properties: ["url"] }
+);
+browser.tabs.onCreated.addListener((tab) => {
+  // Отложенная вкладка (восстановление, перенос окна) ничего не открывает.
+  if (tab.discarded) {
+    if (settings.groupRules.length) ruleMatches.set(tab.id, ruleKey(tab.url));
+  } else {
+    onTabUrl(tab, true);
+  }
+});
+browser.tabs.onRemoved.addListener((tabId) => ruleMatches.delete(tabId));
+
+// ---------------------------------------------------------------- горячие клавиши
+//
+// Команды объявлены в manifest.json ("commands"); сочетания пользователь
+// меняет на странице настроек или в about:addons. Работают и при закрытой
+// панели, поэтому живут здесь, а не в ней.
+
+const COMMANDS = {
+  "toggle-mic": toggleCallMic,
+  "media-toggle": () => commandMedia("toggle"),
+  "media-next": () => commandMedia("nexttrack"),
+  "media-prev": () => commandMedia("previoustrack"),
+  "speed-up": () => commandRate((r) => Model.stepRate(r, 1)),
+  "speed-down": () => commandRate((r) => Model.stepRate(r, -1)),
+  "speed-reset": () => commandRate(() => 1),
+  "close-duplicates": closeDuplicatesInWindow,
+};
+
+function runCommand(name, tab) {
+  const fn = COMMANDS[name];
+  if (!fn) return Promise.resolve(false);
+  return Promise.resolve(fn(tab)).catch((err) => {
+    console.error("[sidebar-tabs] command failed", name, err);
+    return false;
+  });
+}
+
+// Микрофон звонка — из любой вкладки: идёт звонок в фоне, а под рукой
+// другая страница. Если хоть один микрофон включён — выключаем все, иначе
+// включаем все.
+async function toggleCallMic() {
+  const tabs = (await browser.tabs.query({})).filter((t) => t.sharingState && t.sharingState.microphone);
+  if (tabs.length === 0) return false;
+  const muted = tabs.some((t) => !micOf(t.id).muted);
+  await Promise.all(tabs.map((t) => setTabMic(t.id, { muted })));
+  return true;
+}
+
+// Строка плеера для команды: играющая, иначе верхняя.
+function commandSession(fits) {
+  const rows = mediaList().filter((s) => !s.basic && fits(s));
+  return rows.find((s) => s.playing) || rows[0] || null;
+}
+
+function commandMedia(action) {
+  const s = commandSession((x) => (action === "toggle" ? x.canPlay : x.actions.includes(action)));
+  if (!s) return false;
+  return mediaControl({ tabId: s.tabId, frameId: s.frameId, action });
+}
+
+function commandRate(next) {
+  const s = commandSession((x) => x.canRate);
+  if (!s) return false;
+  return mediaControl({ tabId: s.tabId, frameId: s.frameId, action: "rate", rate: next(s.rate) });
+}
+
+// Закрыть дубликаты в окне вкладки, где нажали сочетание.
+async function closeDuplicatesInWindow(tab) {
+  const windowId = tab && Number.isInteger(tab.windowId) ? tab.windowId : (await browser.windows.getLastFocused()).id;
+  const ids = Model.duplicatesToClose(await browser.tabs.query({ windowId }));
+  if (ids.length) await browser.tabs.remove(ids);
+  return ids.length;
+}
+
+if (browser.commands && browser.commands.onCommand) browser.commands.onCommand.addListener(runCommand);
+
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || typeof msg !== "object") return undefined;
   if (msg.type === "getVolumes") return Promise.resolve(Object.fromEntries(tabVolumes));
@@ -1064,6 +1322,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "mediaControl" && Number.isInteger(msg.tabId) && Number.isInteger(msg.frameId)) {
     return mediaControl(msg);
   }
+  if (msg.type === "applyGroupRules") return applyGroupRulesToOpenTabs();
   return undefined;
 });
 
@@ -1087,12 +1346,13 @@ async function restoreIntoWindow(windowId, tabsData, placeholderIds) {
   let baseIndex = placeholderIds.length;
   const createdTabs = [];
 
-  if (placeholderIds.length === 1 && tabsData.length > 0) {
-    // Под заглушку берём именно ту вкладку, что была активна на момент сохранения
-    // (не обязательно первую по индексу) — иначе после восстановления фокус
-    // окажется не там, где был.
-    const activeIdx = tabsData.findIndex((t) => t.active);
-    const reuseIdx = activeIdx >= 0 ? activeIdx : 0;
+  // Под заглушку берём именно ту вкладку, что была активна на момент сохранения
+  // (не обязательно первую по индексу) — иначе после восстановления фокус
+  // окажется не там, где был. Вкладку контейнера — нет: контейнер у открытой
+  // вкладки не сменить, такую создаём заново.
+  const activeIdx = tabsData.findIndex((t) => t.active);
+  const reuseIdx = activeIdx >= 0 ? activeIdx : 0;
+  if (placeholderIds.length === 1 && tabsData.length > 0 && !isContainerStore(tabsData[reuseIdx].cookieStoreId)) {
     const reuseData = tabsData[reuseIdx];
     try {
       await browser.tabs.update(placeholderIds[0], {
@@ -1110,7 +1370,7 @@ async function restoreIntoWindow(windowId, tabsData, placeholderIds) {
 
   const results = await Promise.allSettled(
     remaining.map((entry, j) =>
-      browser.tabs.create({
+      createRestoredTab({
         windowId,
         url: entry.data.url,
         title: entry.data.title || entry.data.url,
@@ -1118,6 +1378,7 @@ async function restoreIntoWindow(windowId, tabsData, placeholderIds) {
         active: false,
         discarded: !entry.data.active && !looksLikeFreshUrl(entry.data.url),
         index: baseIndex + j,
+        ...(isContainerStore(entry.data.cookieStoreId) ? { cookieStoreId: entry.data.cookieStoreId } : {}),
       })
     )
   );
@@ -1142,6 +1403,17 @@ async function restoreIntoWindow(windowId, tabsData, placeholderIds) {
   }
 
   return createdTabs;
+}
+
+// Контейнер мог исчезнуть (удалили, выключили контейнеры) — тогда вкладка
+// возвращается обычной: страница важнее контейнера.
+function createRestoredTab(props) {
+  return browser.tabs.create(props).catch((err) => {
+    if (!props.cookieStoreId) throw err;
+    console.error("[sidebar-tabs] container is gone, restoring tab without it", props.cookieStoreId, err);
+    const { cookieStoreId, ...rest } = props;
+    return browser.tabs.create(rest);
+  });
 }
 
 // Воссоздаёт группы вкладок в уже восстановленном окне. groupKey, сохранённый
@@ -1318,7 +1590,20 @@ if (typeof module !== "undefined" && module.exports) {
     SAVE_RETRY_MS,
     SAVE_RETRY_MAX,
     mediaChanged,
+    isContainerStore,
+    applySettings,
+    settingsReady,
+    seedRuleMatches,
+    onTabUrl,
+    applyGroupRule,
+    applyGroupRulesToOpenTabs,
+    runCommand,
+    _getSettings: () => settings,
+    _getRuleMatches: () => ruleMatches,
     _resetState: () => {
+      settings = Settings.normalizeSettings(null);
+      ruleMatches.clear();
+      ruleQueue = Promise.resolve();
       isRestoring = false;
       lastSavedSerialized = null;
       pendingSince = null;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Sidebar Tabs",
-  "version": "5.13.3",
+  "version": "5.14.0",
   "description": "Компактная панель вкладок в боковой панели с нативными группами Firefox, плеером и громкостью вкладок + автосохранение вкладок в фоне на случай краша браузера или отключения питания.",
   "browser_specific_settings": {
     "gecko": {
@@ -19,6 +19,9 @@
     "tabGroups",
     "storage",
     "theme",
+    "sessions",
+    "contextualIdentities",
+    "cookies",
     "<all_urls>"
   ],
   "icons": {
@@ -27,6 +30,8 @@
   },
   "background": {
     "scripts": [
+      "shared/settings.js",
+      "sidebar/model.js",
       "background.js"
     ],
     "persistent": true
@@ -51,5 +56,50 @@
     "default_panel": "sidebar/sidebar.html",
     "default_icon": "icons/icon.svg",
     "open_at_install": true
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "_execute_sidebar_action": {
+      "description": "Показать или скрыть панель вкладок"
+    },
+    "toggle-mic": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+M"
+      },
+      "description": "Выключить или включить микрофон звонка (в любой вкладке)"
+    },
+    "media-toggle": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+P"
+      },
+      "description": "Плеер: пауза или воспроизведение"
+    },
+    "media-next": {
+      "description": "Плеер: следующий трек"
+    },
+    "media-prev": {
+      "description": "Плеер: предыдущий трек"
+    },
+    "speed-up": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+Period"
+      },
+      "description": "Плеер: быстрее на 0,25×"
+    },
+    "speed-down": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+Comma"
+      },
+      "description": "Плеер: медленнее на 0,25×"
+    },
+    "speed-reset": {
+      "description": "Плеер: обычная скорость (1×)"
+    },
+    "close-duplicates": {
+      "description": "Закрыть дубликаты вкладок в окне"
+    }
   }
 }

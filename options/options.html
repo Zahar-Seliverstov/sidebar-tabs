@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sidebar Tabs — настройки</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <header class="page-head">
+      <img src="../icons/icon.svg" width="40" height="40" alt="">
+      <div>
+        <h1>Sidebar Tabs</h1>
+        <p class="sub">Настройки сохраняются сразу и действуют во всех окнах.</p>
+      </div>
+      <span id="saved" class="saved" role="status" hidden>Сохранено</span>
+    </header>
+
+    <section class="card">
+      <h2>Панель</h2>
+
+      <label class="row">
+        <span class="row-text">
+          <b>Недавно закрытые</b>
+          <small>Блок над плеером: вкладки, закрытые в этом окне, и закрытые окна. Клик — вернуть.</small>
+        </span>
+        <input type="checkbox" class="switch" data-setting="closedShown">
+      </label>
+      <label class="row sub-row" data-depends="closedShown">
+        <span class="row-text"><b>Сколько показывать</b></span>
+        <select data-setting="closedCount" data-number>
+          <option value="5">5</option>
+          <option value="10">10</option>
+          <option value="15">15</option>
+          <option value="25">25</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <span class="row-text">
+          <b>Отмечать дубликаты</b>
+          <small>Значок у вкладок, открытых больше одного раза (тот же адрес в том же контейнере), и кнопка «закрыть дубликаты» сверху.</small>
+        </span>
+        <input type="checkbox" class="switch" data-setting="duplicates">
+      </label>
+
+      <label class="row">
+        <span class="row-text">
+          <b>Контейнеры</b>
+          <small id="containers-note">Цветная полоска контейнера справа у вкладки. «Открыть в контейнере» и «Новая вкладка в контейнере» — в контекстном меню.</small>
+        </span>
+        <input type="checkbox" class="switch" data-setting="containers">
+      </label>
+
+      <label class="row">
+        <span class="row-text">
+          <b>Подсказки горячих клавиш</b>
+          <small>Сочетания клавиш справа в контекстном меню и во всплывающих подсказках кнопок.</small>
+        </span>
+        <input type="checkbox" class="switch" data-setting="shortcutHints">
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Автогруппировка</h2>
+      <p class="help">
+        Вкладка, открывшая подходящий адрес, сама попадает в группу с этим названием. Если такой группы
+        в окне ещё нет, она создаётся. Вкладки, которые уже в группе или закреплены, остаются на месте.
+        Правила проверяются сверху вниз, срабатывает первое подходящее.
+      </p>
+      <details class="examples">
+        <summary>Как писать адрес</summary>
+        <dl>
+          <dt><code>github.com</code></dt><dd>сайт и все его поддомены (www., gist. …)</dd>
+          <dt><code>*.google.com</code></dt><dd>только поддомены: mail.google.com, docs.google.com</dd>
+          <dt><code>github.com/mozilla</code></dt><dd>страницы под этим путём</dd>
+          <dt><code>*/wiki/*</code></dt><dd><code>*</code> — любой кусок адреса</dd>
+          <dt><code>localhost:3000</code></dt><dd>только этот порт; без порта — любой</dd>
+        </dl>
+      </details>
+
+      <div id="rules" class="rules"></div>
+      <div class="rules-actions">
+        <button id="rule-add" type="button" class="btn">+ Добавить правило</button>
+        <button id="rules-apply" type="button" class="btn ghost">Применить к открытым вкладкам</button>
+        <span id="rules-status" class="status" role="status"></span>
+      </div>
+
+      <div class="probe">
+        <label for="probe-url">Проверить адрес</label>
+        <input id="probe-url" type="url" placeholder="https://github.com/mozilla/gecko-dev" spellcheck="false">
+        <span id="probe-result" class="probe-result"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Горячие клавиши</h2>
+      <p class="help">
+        Нажмите на сочетание и введите новое. Нужен Ctrl или Alt (на macOS — ⌘ или ⌃); клавиши F1–F12 можно и без них.
+        Сочетание, которое уже занято самим Firefox, работать не будет.
+      </p>
+      <div id="shortcuts" class="shortcuts"></div>
+      <p class="help small" id="shortcuts-more" hidden>
+        <button id="open-shortcuts" type="button" class="link">Все сочетания дополнений Firefox</button>
+      </p>
+    </section>
+  </main>
+
+  <template id="rule-tpl">
+    <div class="rule">
+      <input class="rule-pattern" type="text" placeholder="github.com" spellcheck="false" aria-label="Адрес">
+      <span class="arrow" aria-hidden="true">→</span>
+      <input class="rule-group" type="text" placeholder="Название группы" aria-label="Группа">
+      <span class="swatches" role="radiogroup" aria-label="Цвет группы"></span>
+      <span class="rule-tools">
+        <button type="button" class="icon-btn" data-act="up" title="Выше (раньше проверяется)">↑</button>
+        <button type="button" class="icon-btn" data-act="down" title="Ниже">↓</button>
+        <button type="button" class="icon-btn danger" data-act="remove" title="Удалить правило">✕</button>
+      </span>
+      <span class="rule-error" hidden>Такой адрес не подойдёт ни к одной странице</span>
+    </div>
+  </template>
+
+  <script src="../shared/settings.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

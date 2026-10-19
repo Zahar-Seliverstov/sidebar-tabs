@@ -23,7 +23,7 @@ const PAGES = path.join(__dirname, "pages");
 const OUT = path.join(ROOT, "docs");
 const FIREFOX = process.env.FIREFOX || "firefox-developer-edition";
 const EXT_ID = "minimal-tab-bar@local.ext";
-const SHIP = ["manifest.json", "background.js", "content", "sidebar", "icons"];
+const SHIP = ["manifest.json", "background.js", "shared", "content", "sidebar", "options", "icons", "plugins"];
 
 // Окно без интерфейса не уже 500 px — ширину панели задаёт CSS, снимок обрезается.
 const PANEL = { width: 320, height: 720 };

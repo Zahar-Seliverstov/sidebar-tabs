@@ -32,7 +32,7 @@ const ROOT = path.resolve(__dirname, "..");
 const PAGES = path.join(__dirname, "pages");
 const FIREFOX = process.env.FIREFOX || "firefox-developer-edition";
 const EXT_ID = "minimal-tab-bar@local.ext";
-const SHIP = ["manifest.json", "background.js", "content", "sidebar", "icons", "plugins"];
+const SHIP = ["manifest.json", "background.js", "shared", "content", "sidebar", "options", "icons", "plugins"];
 const STEP_TIMEOUT_MS = 6000;
 
 // ---------------------------------------------------------------- сервер
@@ -634,6 +634,152 @@ async function waitControlPlain(describe, selector, predicate) {
 
 // ---------------------------------------------------------------- запуск
 
+// ---------------------------------------------------------------- 5.14: недавно закрытые, дубликаты, контейнеры, правила, скорость, клавиши
+
+// Повторяет команду, пока predicate(ответ) не вернёт истину.
+async function waitCmd(describe, op, args, predicate, timeout = STEP_TIMEOUT_MS) {
+  const start = Date.now();
+  let value;
+  while (Date.now() - start < timeout) {
+    value = await cmd(op, args);
+    if (predicate(value)) return value;
+    await sleep(80);
+  }
+  throw new Error(`не дождались: ${describe}\n    получено: ${JSON.stringify(value)}`);
+}
+
+function check(ok, what, value) {
+  if (!ok) throw new Error(`${what}: ${JSON.stringify(value)}`);
+}
+
+scenario("дубликаты: значок у копий, кнопка сверху закрывает лишние, активная копия остаётся", async () => {
+  await ensurePanel();
+  const url = page("blank", "dup=" + Date.now());
+  const a = await cmd("open", { url });
+  const b = await cmd("open", { url: url + "#copy" });
+  await waitCmd("кнопка дубликатов со счётчиком 1", "uiQuery", { selector: "#tb-dups" }, (r) => r[0] && r[0].shown && r[0].text === "1");
+  await waitCmd("значок у обеих копий", "uiQuery", { selector: ".tab.has-dup" }, (r) => r.length === 2);
+  await cmd("uiClick", { selector: "#tb-dups" });
+  await waitFor("закрыта неактивная копия", (s) => !s.tabs.some((t) => t.id === a) && s.tabs.some((t) => t.id === b));
+  await waitCmd("кнопка спряталась", "uiQuery", { selector: "#tb-dups" }, (r) => r[0] && !r[0].shown);
+  await cmd("close", { tabId: b });
+});
+
+scenario("недавно закрытые: закрытая вкладка видна в блоке, клик возвращает её", async () => {
+  await ensurePanel();
+  await cmd("setSettings", { settings: { closedOpen: true } });
+  const url = page("blank", "closed=" + Date.now());
+  const tab = await cmd("open", { url });
+  await waitFor("страница загрузилась", (s) => s.tabs.some((t) => t.id === tab && t.status === "complete"));
+  await cmd("close", { tabId: tab });
+  await waitCmd("строка сверху блока", "uiQuery", { selector: "#closed .ctab" }, (r) => r[0] && r[0].title.includes(url) && r[0].text.includes("Пустая страница"));
+  await cmd("uiClick", { selector: "#closed .ctab" });
+  const back = await waitFor("вкладка вернулась", (s) => s.tabs.find((t) => t.url === url));
+  await waitCmd("и ушла из блока", "uiQuery", { selector: "#closed .ctab" }, (r) => !r.some((x) => x.title.includes(url)));
+  await cmd("close", { tabId: back.id });
+  await cmd("setSettings", { settings: {} });
+});
+
+scenario("автогруппировка: новые вкладки подходящего адреса попадают в одну группу правила, остальные — нет", async () => {
+  await cmd("setSettings", { settings: { groupRules: [{ pattern: "127.0.0.1/blank.html", group: "E2E правило", color: "purple" }] } });
+  const a = await cmd("open", { url: page("blank", "rule=1") });
+  const info = await waitCmd("вкладка в группе правила", "tabInfo", { tabId: a }, (t) => t && t.group && t.group.title === "E2E правило" && t.group.color === "purple");
+  const b = await cmd("open", { url: page("blank", "rule=2") });
+  await waitCmd("вторая — в ту же группу", "tabInfo", { tabId: b }, (t) => t && t.groupId === info.groupId);
+  const c = await cmd("open", { url: page("nope") });
+  await sleep(600);
+  const other = await cmd("tabInfo", { tabId: c });
+  check(other.groupId === -1, "чужой адрес попал в группу", other);
+  for (const tabId of [a, b, c]) await cmd("close", { tabId });
+  await cmd("setSettings", { settings: {} });
+});
+
+scenario("скорость: значок в пульте, колесо и меню меняют скорость страницы, следующий трек её сохраняет", async () => {
+  await ensurePanel();
+  const tab = await openPage("player", "mode=detached&meta=1&handlers=1&newPerTrack=1");
+  await waitFor("играет, скорость можно менять", (s) => rowOf(s, tab)?.playing && rowOf(s, tab).canRate);
+  await waitCmd("значок 1×", "uiQuery", { selector: "#deck-rate" }, (r) => r[0] && r[0].shown && r[0].text === "1×");
+  await cmd("uiWheel", { selector: "#deck-rate", deltaY: 100 });
+  await waitPage("страница играет на 1,25×", tab, (x) => x.rate === 1.25);
+  await waitCmd("значок 1,25×", "uiQuery", { selector: "#deck-rate" }, (r) => r[0].text === "1,25×" && r[0].cls.includes("changed"));
+  await cmd("uiClick", { selector: "#deck-rate" });
+  await cmd("uiMenuClick", { label: "2×" });
+  await waitPage("2× из меню", tab, (x) => x.rate === 2);
+  await cmd("page", { tabId: tab, fn: "next" });
+  await waitPage("новый плеер следующего трека — тоже 2×", tab, (x) => x.track === 2 && x.rate === 2 && !x.paused);
+  await cmd("command", { name: "speed-reset" });
+  await waitPage("команда «обычная скорость»", tab, (x) => x.rate === 1);
+  await cmd("close", { tabId: tab });
+});
+
+// Сайт с одним плеером на все треки: новый src (и load()) сбрасывает скорость
+// к defaultPlaybackRate — это не выбор сайта, выбранная в панели должна остаться.
+for (const [how, params] of [["новый src", ""], ["новый src и load()", "&load=1"]]) {
+  scenario(`скорость: один плеер на все треки (${how}) — следующий трек играет с выбранной скоростью`, async () => {
+    await ensurePanel();
+    const tab = await openPage("player", "mode=dom&meta=1&handlers=1" + params);
+    await waitFor("играет, скорость можно менять", (s) => rowOf(s, tab)?.playing && rowOf(s, tab).canRate);
+    await waitCmd("значок 1×", "uiQuery", { selector: "#deck-rate" }, (r) => r[0] && r[0].shown && r[0].text === "1×");
+    await cmd("uiClick", { selector: "#deck-rate" });
+    await cmd("uiMenuClick", { label: "1,5×" });
+    await waitPage("1,5× из меню", tab, (x) => x.rate === 1.5);
+    await cmd("page", { tabId: tab, fn: "next" });
+    await waitPage("тот же плеер на следующем треке — тоже 1,5×", tab, (x) => x.track === 2 && x.rate === 1.5 && !x.paused && x.t > 0.3);
+    // Скорость не откатывается позже (поздний ratechange сброса).
+    for (const until = Date.now() + 600; Date.now() < until; await sleep(80)) {
+      const x = await cmd("pageState", { tabId: tab });
+      check(x.rate === 1.5, "скорость откатилась", x);
+    }
+    await waitCmd("значок 1,5×", "uiQuery", { selector: "#deck-rate" }, (r) => r[0].text === "1,5×");
+    await cmd("command", { name: "speed-reset" });
+    await waitPage("команда «обычная скорость»", tab, (x) => x.rate === 1);
+    await cmd("close", { tabId: tab });
+  });
+}
+
+scenario("контейнеры: полоска у вкладки, автосохранение помнит контейнер, «Открыть в контейнере» переоткрывает", async () => {
+  await ensurePanel();
+  const store = await cmd("createContainer", { name: "E2E", color: "orange" });
+  try {
+    const url = page("blank", "ctx=" + Date.now());
+    const tab = await cmd("openIn", { url, cookieStoreId: store });
+    await waitCmd("полоска и подсказка контейнера", "uiQuery", { selector: `[data-key="t${tab}"]` }, (r) => r[0] && r[0].cls.includes("ctx") && r[0].title.includes("Контейнер «E2E»"));
+    await waitCmd("контейнер в снимке сессии", "storage", { key: "lastSession" }, (s) => s && s.windows.some((w) => w.tabs.some((t) => t.url === url && t.cookieStoreId === store)));
+    await cmd("uiCall", { fn: "reopenInContainer", args: [[tab], "firefox-default"] });
+    const again = await waitFor("старая закрыта, страница открыта заново", (s) => !s.tabs.some((t) => t.id === tab) && s.tabs.find((t) => t.url === url));
+    const info = await cmd("tabInfo", { tabId: again.id });
+    check(info.cookieStoreId === "firefox-default", "переоткрыта не без контейнера", info);
+    await cmd("close", { tabId: again.id });
+  } finally {
+    await cmd("removeContainer", { cookieStoreId: store }).catch(() => {});
+  }
+});
+
+scenario("горячие клавиши: свои команды с сочетаниями, стандартные клавиши Firefox — в меню панели", async () => {
+  await ensurePanel();
+  const list = await cmd("commands");
+  const mic = list.find((c) => c.name === "toggle-mic");
+  check(mic && mic.shortcut === "Ctrl+Alt+M", "toggle-mic", mic);
+  const items = await cmd("uiCall", { fn: "newTabMenu" });
+  check(items[0].shortcut === "Ctrl+T", "«Новая вкладка» в меню", items[0]);
+  check((await cmd("uiCall", { fn: "keyHint", args: ["speed-up"] })) === "Ctrl+Alt+.", "подсказка speed-up", null);
+});
+
+// Последним: страница настроек открывается вкладкой и забирает фокус окна.
+scenario("настройки: правило сохраняется, сочетание назначается с клавиатуры и сразу видно в панели", async () => {
+  await ensurePanel();
+  await cmd("optionsOpen");
+  await cmd("optionsAddRule", { pattern: "example.org", group: "Пример" });
+  await waitCmd("правило в storage", "storage", { key: "settings" }, (s) => s && (s.groupRules || []).some((r) => r.pattern === "example.org" && r.group === "Пример"));
+  await cmd("optionsRecord", { name: "media-next", code: "KeyN", key: "т", ctrl: true, alt: true });
+  await waitCmd("Firefox принял сочетание", "commands", {}, (l) => l.find((c) => c.name === "media-next").shortcut === "Ctrl+Alt+N");
+  await waitCmd("кнопка показывает новое сочетание", "optionsQuery", { selector: '.shortcut[data-name="media-next"] .kbd' }, (r) => r[0] && r[0].text === "Ctrl+Alt+N");
+  await waitCmd("панель знает новое сочетание", "uiCall", { fn: "keyHint", args: ["media-next"] }, (h) => h === "Ctrl+Alt+N");
+  await cmd("optionsRecord", { name: "media-prev", code: "KeyN", key: "т", ctrl: true, alt: true });
+  await waitCmd("занятое сочетание — ошибка, а не замена", "optionsQuery", { selector: '.shortcut[data-name="media-prev"] .shortcut-error' }, (r) => r[0] && !r[0].hidden && r[0].text.includes("Уже назначено"));
+  await cmd("setSettings", { settings: {} });
+});
+
 // Пустой аудиовыход на время тестов. Возвращает функцию удаления или null.
 function createNullSink() {
   const { spawnSync } = require("node:child_process");
@@ -688,6 +834,8 @@ function prepare(nullSink) {
       ["media.navigator.permission.fake", true],
       ["permissions.default.microphone", 1],
       ["permissions.default.camera", 1],
+      // Контейнеры (для сценариев 5.14).
+      ["privacy.userContext.enabled", true],
       ["browser.shell.checkDefaultBrowser", false],
       ["browser.startup.homepage_override.mstone", "ignore"],
       ["datareporting.policy.dataSubmissionEnabled", false],

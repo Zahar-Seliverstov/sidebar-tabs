@@ -20,7 +20,8 @@
  *   - то же сообщение раз в HEARTBEAT_MS, пока фрейму есть что показать:
  *     фон выбрасывает фреймы, от которых давно ничего не было;
  *   - "mediaQuery" — фон в любой момент спрашивает текущее состояние;
- *   - "mediaControl" — команда; ответ — когда сайт отреагировал (или вышло
+ *   - "mediaControl" — команда (в том числе "rate" — скорость воспроизведения,
+ *     её сайт не объявляет: ставится прямо плееру); ответ — когда сайт отреагировал (или вышло
  *     время): состояние ПОСЛЕ неё, чтобы панель показывала то, что произошло
  *     на самом деле, а не то, что ожидалось, и не «откатывала» кнопку, пока
  *     медленный сайт ещё думает.
@@ -67,6 +68,9 @@
     // выключил кнопкой сайта, — продолжаем.
     heard: new WeakSet(),
     position: null,
+    // Скорость, выбранная в панели: новый плеер (следующий трек) получает
+    // её при запуске. null — не выбирали, скорость — как у сайта.
+    rate: null,
     lastKey: "",
     shown: false,
     wasPlaying: false,
@@ -161,9 +165,31 @@
 
   function onMediaEvent(e) {
     const el = e.currentTarget;
-    if (e.type === "play" || e.type === "playing") M.started.set(el, performance.now());
+    if (e.type === "play" || e.type === "playing") {
+      M.started.set(el, performance.now());
+      applyRate(el);
+    }
+    // Скорость сменил сам сайт (его меню скорости) — теперь она и есть выбранная.
+    // Кроме сброса при загрузке: новый src или load() возвращает playbackRate
+    // к defaultPlaybackRate (и Firefox шлёт ratechange) уже после перехода в
+    // HAVE_NOTHING — это не выбор сайта, иначе на сайтах с одним плеером на
+    // все треки следующий трек играл бы на 1×. Выбранную скорость плеер
+    // получит на play. (Сейчас такой плеер и так не главный — duration уже
+    // NaN, — но это совпадение, а не правило.)
+    if (e.type === "ratechange" && M.rate !== null && el.readyState !== 0 && el === mainElement()) {
+      try {
+        M.rate = el.playbackRate;
+      } catch (err) {}
+    }
     noteHeard(el);
     schedule(e.type === "seeked");
+  }
+
+  function applyRate(el) {
+    if (M.rate === null) return;
+    try {
+      if (el.playbackRate !== M.rate) el.playbackRate = M.rate;
+    } catch (e) {}
   }
 
   // Главный плеер — звучащий; из нескольких звучащих — запущенный последним;
@@ -283,13 +309,24 @@
       late: late && M.handlers.size === 0 && !!meta,
       // Прямая трансляция: у плеера нет конца (радио, стрим).
       live: !position && !!el && el.duration === Infinity,
+      // Скорость — только у настоящего плеера; Web Audio её не меняет.
+      rate: readRate(el),
+      canRate: !!el,
       plugins: pluginButtons(),
     };
   }
 
+  function readRate(el) {
+    try {
+      return el ? el.playbackRate : 1;
+    } catch (e) {
+      return 1;
+    }
+  }
+
   function stateKey(state) {
     const p = state && state.position;
-    return JSON.stringify(state && [state.meta, state.playing, state.pageMuted, state.actions, state.canPlay, p && Math.round(p.duration), p && p.rate, state && state.live, state && state.late, state && state.plugins]);
+    return JSON.stringify(state && [state.meta, state.playing, state.pageMuted, state.actions, state.canPlay, p && Math.round(p.duration), p && p.rate, state && state.live, state && state.late, state && state.rate, state && state.plugins]);
   }
 
   function send(state) {
@@ -447,7 +484,15 @@
   // ---------------------------------------------------------------- управление
 
   // Возвращает действие, которое на самом деле выполнялось (toggle → play/pause).
-  function control(action, seekTime) {
+  function control(action, seekTime, rate) {
+    if (action === "rate") {
+      const main = mainElement();
+      if (main && Number.isFinite(rate) && rate > 0) {
+        M.rate = rate;
+        for (const el of M.els) if (el === main || significant(el)) applyRate(el);
+      }
+      return action;
+    }
     if (action.startsWith("plugin:")) {
       const P = window.__mtbPlugins;
       if (P) P.press(action.slice(7));
@@ -492,7 +537,7 @@
   // Ждёт, пока сайт отреагирует на команду; не дождались — отвечаем как
   // есть. Возвращает, отреагировал ли сайт.
   async function awaitReaction(action, before) {
-    if (action === "seekto" || action === "seekforward" || action === "seekbackward") {
+    if (action === "seekto" || action === "seekforward" || action === "seekbackward" || action === "rate") {
       await sleep(SEEK_SETTLE_MS);
       return true;
     }
@@ -528,7 +573,7 @@
 
   async function runControl(msg) {
     const before = snapshot();
-    const action = control(msg.action, msg.seekTime);
+    const action = control(msg.action, msg.seekTime, msg.rate);
     const reacted = await awaitReaction(action, before);
     // Ответ — фактическое состояние; заодно сбрасываем ключ, чтобы
     // следующее событие точно ушло в фон.

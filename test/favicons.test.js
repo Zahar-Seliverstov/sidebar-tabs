@@ -92,9 +92,11 @@ test("favicons: кэш с диска подмешивается, свежие з
   const browser = createMockBrowser({
     initialStorage: { favicons: { "a.com": "https://a.com/old.png", "b.com": "https://b.com/i.png" } },
   });
-  let releaseGet;
+  // Фон читает storage несколько раз (иконки, настройки, плагины) — держим все чтения.
+  const held = [];
+  const releaseGet = () => held.splice(0).forEach((release) => release());
   const realGet = browser.storage.local.get;
-  browser.storage.local.get = (key) => new Promise((resolve) => (releaseGet = () => resolve(realGet(key))));
+  browser.storage.local.get = (key) => new Promise((resolve) => held.push(() => resolve(realGet(key))));
 
   const bg = loadBackground(browser);
   bg.rememberFavicon(page("https://a.com/"), "https://a.com/new.png");

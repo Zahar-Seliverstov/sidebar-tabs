@@ -31,6 +31,8 @@ const hasGroups = typeof browser.tabs.group === "function" && !!browser.tabGroup
 
 const state = {
   windowId: null,
+  // Приватное окно: контейнеров в нём не бывает.
+  incognito: false,
   tabs: new Map(),
   groups: new Map(),
   selected: new Set(),
@@ -57,6 +59,19 @@ const state = {
   media: [],
   // Вкладки плеера из других окон (своего окна — в tabs).
   otherTabs: new Map(),
+  // Настройки (страница options/, см. shared/settings.js).
+  settings: SidebarSettings.normalizeSettings(null),
+  // Имя команды → сочетание клавиш ("Ctrl+Alt+M"); только назначенные.
+  shortcuts: new Map(),
+  os: "linux",
+  // cookieStoreId → контейнер Firefox ({ name, colorCode, … }).
+  containers: new Map(),
+  // tabId → сколько ещё вкладок открыто на той же странице.
+  dups: new Map(),
+  // Какие вкладки закроет кнопка дубликатов (считается в render() вместе с dups).
+  dupsToClose: [],
+  // sessions.getRecentlyClosed() — для блока «Недавно закрытые».
+  closed: [],
 };
 
 const $pinned = document.getElementById("pinned");
@@ -175,6 +190,130 @@ function listen() {
       scheduleRender();
     });
   }
+}
+
+// ---------------------------------------------------------------- настройки
+
+function listenSettings() {
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[SidebarSettings.SETTINGS_KEY]) return;
+    state.settings = SidebarSettings.normalizeSettings(changes[SidebarSettings.SETTINGS_KEY].newValue);
+    scheduleRender();
+    renderClosed();
+  });
+}
+
+function saveSettings(patch) {
+  state.settings = { ...state.settings, ...patch };
+  return browser.storage.local.set({ [SidebarSettings.SETTINGS_KEY]: state.settings });
+}
+
+// ---------------------------------------------------------------- горячие клавиши
+//
+// Подсказки в меню и всплывающих подсказках. Сочетания своих команд
+// (manifest.json → commands) берутся у Firefox — с учётом того, что
+// пользователь переназначил, и обновляются, когда он их меняет. Сочетания
+// самого Firefox расширению не узнать — для них известные стандартные (их
+// в Firefox не переназначить).
+
+const FIREFOX_KEYS = {
+  "ff-new-tab": "Ctrl+T",
+  "ff-close": "Ctrl+W",
+  "ff-reopen": "Ctrl+Shift+T",
+  "ff-reload": "Ctrl+R",
+  "ff-mute": "Ctrl+M",
+};
+
+async function loadShortcuts() {
+  if (!browser.commands || typeof browser.commands.getAll !== "function") return;
+  const list = await browser.commands.getAll();
+  const next = new Map(list.filter((c) => c.shortcut).map((c) => [c.name, c.shortcut]));
+  if ([...next].join() === [...state.shortcuts].join()) return;
+  state.shortcuts = next;
+  scheduleRender();
+}
+
+function listenShortcuts() {
+  run(browser.runtime.getPlatformInfo().then((info) => (state.os = info.os)));
+  run(loadShortcuts());
+  if (browser.commands && browser.commands.onChanged) browser.commands.onChanged.addListener(() => run(loadShortcuts()));
+  // Сочетание могли поменять в about:addons, пока панель была не в фокусе.
+  window.addEventListener("focus", () => run(loadShortcuts()));
+}
+
+// Сочетание для подсказки или "" (не назначено или подсказки выключены).
+function keyHint(name) {
+  if (!state.settings.shortcutHints) return "";
+  let raw = state.shortcuts.get(name) || FIREFOX_KEYS[name] || "";
+  // Cmd+M на macOS сворачивает окно — звук там выключает Ctrl+M.
+  if (name === "ff-mute" && state.os === "mac") raw = "MacCtrl+M";
+  return SidebarSettings.formatShortcut(raw, state.os);
+}
+
+function withHint(title, name) {
+  const key = keyHint(name);
+  return key ? `${title} (${key})` : title;
+}
+
+// ---------------------------------------------------------------- контейнеры
+
+const hasContainers = !!browser.contextualIdentities;
+
+// Контейнеры выключены в Firefox — query отказывает, список просто пуст.
+async function loadContainers() {
+  let list = [];
+  try {
+    list = await browser.contextualIdentities.query({});
+  } catch (err) {}
+  state.containers = new Map(list.map((c) => [c.cookieStoreId, c]));
+  scheduleRender();
+}
+
+function listenContainers() {
+  if (!hasContainers) return;
+  run(loadContainers());
+  const ci = browser.contextualIdentities;
+  for (const ev of [ci.onCreated, ci.onUpdated, ci.onRemoved]) if (ev) ev.addListener(() => run(loadContainers()));
+}
+
+function shownContainer(tab) {
+  return state.settings.containers ? containerOf(tab, state.containers) : null;
+}
+
+// Контейнер открытой вкладки не сменить: открываем ту же страницу в нужном
+// контейнере на её месте (и в её группе), а старую закрываем. По одной:
+// create + remove оставляют индексы следующих вкладок прежними.
+async function reopenInContainer(ids, cookieStoreId) {
+  for (const id of ids) {
+    const tab = state.tabs.get(id);
+    const props = reopenProps(tab);
+    if (!props || (tab.cookieStoreId || DEFAULT_STORE) === cookieStoreId) continue;
+    const created = await browser.tabs.create({
+      ...props,
+      windowId: state.windowId,
+      cookieStoreId,
+      index: tab.index + 1,
+      active: tab.active,
+      pinned: tab.pinned,
+    });
+    if (isGrouped(tab)) await browser.tabs.group({ tabIds: [created.id], groupId: tab.groupId }).catch(report);
+    await browser.tabs.remove(id);
+  }
+  setSelection([]);
+}
+
+// Пункты подменю «в контейнере»: pick(cookieStoreId); current — отметить текущий.
+function containerItems(pick, current) {
+  const mark = (id) => (current === undefined ? undefined : current === id);
+  const items = [{ label: "Без контейнера", colorCode: "", checked: mark(DEFAULT_STORE), action: () => pick(DEFAULT_STORE) }];
+  for (const c of state.containers.values()) {
+    items.push({ label: c.name, colorCode: c.colorCode, checked: mark(c.cookieStoreId), action: () => pick(c.cookieStoreId) });
+  }
+  return items;
+}
+
+function canUseContainers() {
+  return hasContainers && !state.incognito && state.containers.size > 0;
 }
 
 // ---------------------------------------------------------------- тема
@@ -371,7 +510,16 @@ function finishFlip(flip) {
 }
 
 function render() {
-  const { pinned, rows } = buildLayout([...state.tabs.values()], state.groups);
+  const all = [...state.tabs.values()];
+  const { pinned, rows } = buildLayout(all, state.groups);
+
+  state.dups = new Map();
+  state.dupsToClose = [];
+  if (state.settings.duplicates) {
+    const sets = duplicateSets(all);
+    for (const list of sets.values()) for (const t of list) state.dups.set(t.id, list.length - 1);
+    state.dupsToClose = duplicatesToClose(all, sets);
+  }
 
   const pinEntries = pinned.map((tab) => ["p" + tab.id, tab]);
   const entries = [];
@@ -454,7 +602,20 @@ function tabClasses(base, tab) {
 
 function tooltip(tab) {
   const title = tab.title || tab.url;
-  return tab.url && tab.url !== title ? title + "\n" + tab.url : title;
+  let tip = tab.url && tab.url !== title ? title + "\n" + tab.url : title;
+  const c = shownContainer(tab);
+  if (c) tip += `\nКонтейнер «${c.name}»`;
+  return tip;
+}
+
+// Полоска контейнера: класс ctx и цвет --cc.
+function paintContainer(el, tab) {
+  const c = shownContainer(tab);
+  if (setIfChanged(el, "cc", c ? c.colorCode : "")) {
+    el.classList.toggle("ctx", !!c);
+    if (c) el.style.setProperty("--cc", c.colorCode);
+    else el.style.removeProperty("--cc");
+  }
 }
 
 function setIfChanged(el, prop, value) {
@@ -474,9 +635,14 @@ function makePin(key) {
 }
 
 function updatePin(el, tab) {
-  if (setIfChanged(el, "cls", tabClasses("pin", tab))) el.className = el._v.cls;
+  // className перезаписывает классы — полоску контейнера красим заново.
+  if (setIfChanged(el, "cls", tabClasses("pin", tab))) {
+    el.className = el._v.cls;
+    el._v.cc = undefined;
+  }
   if (setIfChanged(el, "tip", tooltip(tab))) el.title = el._v.tip;
   setIcon(el.firstChild, iconFor(tab, state.favicons));
+  paintContainer(el, tab);
 }
 
 function makeTab(key) {
@@ -488,6 +654,9 @@ function makeTab(key) {
 
   const title = document.createElement("span");
   title.className = "title";
+  const dup = document.createElement("span");
+  dup.className = "dup";
+  dup.dataset.icon = "copy";
   const mic = makeVolumeControl("mic vexp");
   const audio = makeVolumeControl("audio vexp");
   const close = document.createElement("span");
@@ -495,7 +664,7 @@ function makeTab(key) {
   close.title = "Закрыть вкладку";
   close.dataset.icon = "x";
 
-  el.append(makeIcon(), title, mic, audio, close);
+  el.append(makeIcon(), title, dup, mic, audio, close);
   return el;
 }
 
@@ -503,13 +672,26 @@ function updateTab(el, row) {
   const tab = row.tab;
   const inGroup = row.groupId !== NO_GROUP;
 
-  if (setIfChanged(el, "cls", tabClasses(inGroup ? "tab in-group" : "tab", tab))) el.className = el._v.cls;
+  const dups = state.dups.get(tab.id) || 0;
+  let cls = tabClasses(inGroup ? "tab in-group" : "tab", tab);
+  if (dups) cls += " has-dup";
+  if (setIfChanged(el, "cls", cls)) {
+    el.className = el._v.cls;
+    el._v.cc = undefined;
+  }
   if (setIfChanged(el, "title", tab.title || tab.url || "")) el.children[1].textContent = el._v.title;
   if (setIfChanged(el, "tip", tooltip(tab))) el.title = el._v.tip;
   setIcon(el.firstChild, iconFor(tab, state.favicons));
+  paintContainer(el, tab);
+
+  // Дубликат: значок с подсказкой, клик закрывает остальные копии страницы.
+  const dupTip = dups
+    ? `Эта страница открыта ещё в ${inTabs(dups)}. Клик — закрыть их, оставить эту`
+    : "";
+  if (setIfChanged(el, "dupTip", dupTip)) el.children[2].title = dupTip;
 
   // Значок микрофона — пока вкладка его пишет (это знает сам Firefox).
-  const micEl = el.children[2];
+  const micEl = el.children[3];
   const micShown = usesMic(tab);
   if (setIfChanged(el, "micShown", micShown)) micEl.classList.toggle("shown", micShown);
   if (micShown || micEl.dataset.open !== undefined) updateMicControl(micEl, tab.id);
@@ -517,7 +699,7 @@ function updateTab(el, row) {
   // Значок звука показывается, когда вкладка звучит, выключена, у неё
   // изменена громкость (или регулятор открыт из меню) — и всё время звонка:
   // в тихом звонке вкладка не «звучит», а громкость собеседника нужна сразу.
-  const audioEl = el.children[3];
+  const audioEl = el.children[4];
   const shown = !!tab.audible || isMuted(tab) || state.volumes.has(tab.id) || micShown;
   if (setIfChanged(el, "audioShown", shown)) audioEl.classList.toggle("shown", shown);
   if (setIfChanged(el, "audible", !!tab.audible)) audioEl.classList.toggle("playing", !!tab.audible);
@@ -683,10 +865,10 @@ function sendThrottled(fn, ...args) {
   }, VOLUME_THROTTLE_MS);
 }
 
-async function newTabInGroup(gid) {
+async function newTabInGroup(gid, props = {}) {
   const members = tabsOfGroup(gid);
   const last = members[members.length - 1];
-  const tab = await newTab(last ? { index: last.index + 1 } : {});
+  const tab = await newTab(last ? { ...props, index: last.index + 1 } : props);
   await browser.tabs.group({ tabIds: [tab.id], groupId: gid });
   // В свёрнутой группе новая активная вкладка была бы не видна.
   if (state.groups.get(gid)?.collapsed) await browser.tabGroups.update(gid, { collapsed: false });
@@ -1166,8 +1348,10 @@ function tickPlayer() {
 
 // Состояние меняем сразу, не дожидаясь ответа страницы — кнопка не «залипает».
 // Если страница сделает иначе, следующее её сообщение всё поправит.
-function sendMediaControl(s, action, seekTime) {
-  if (action === "toggle" && s.canPlay) {
+function sendMediaControl(s, action, seekTime, rate) {
+  if (action === "rate") {
+    s.rate = rate;
+  } else if (action === "toggle" && s.canPlay) {
     if (s.position) s.position = { ...s.position, position: mediaPosition(s.position, s.playing, Date.now()), at: Date.now() };
     s.playing = !s.playing;
   } else if (action === "seekto" && s.position) {
@@ -1190,7 +1374,7 @@ function sendMediaControl(s, action, seekTime) {
     refreshMedia();
   };
   // Фон ответит рассылкой фактического состояния; не дошло — спросим сами.
-  browser.runtime.sendMessage({ type: "mediaControl", tabId: s.tabId, frameId: s.frameId, action, seekTime }).then(done, (err) => {
+  browser.runtime.sendMessage({ type: "mediaControl", tabId: s.tabId, frameId: s.frameId, action, seekTime, rate }).then(done, (err) => {
     report(err);
     done(false);
   });
@@ -1283,9 +1467,10 @@ function updateDeck() {
     : s.late
       ? "Расширение обновилось после загрузки страницы — кнопки сайта вернутся после её перезагрузки"
       : "";
-  setOff($dkPlay, s.canPlay, s.playing ? "Пауза" : "Играть", noSite);
-  setOff($dkPrev, s.actions.includes("previoustrack"), "Предыдущий трек", noSite || "Этот сайт не даёт переключать треки извне");
-  setOff($dkNext, s.actions.includes("nexttrack"), "Следующий трек", noSite || "Этот сайт не даёт переключать треки извне");
+  setOff($dkPlay, s.canPlay, withHint(s.playing ? "Пауза" : "Играть", "media-toggle"), noSite);
+  setOff($dkPrev, s.actions.includes("previoustrack"), withHint("Предыдущий трек", "media-prev"), noSite || "Этот сайт не даёт переключать треки извне");
+  setOff($dkNext, s.actions.includes("nexttrack"), withHint("Следующий трек", "media-next"), noSite || "Этот сайт не даёт переключать треки извне");
+  updateRate(s);
   setOff($dkBack, canSkip(s), "Назад на 10 секунд", noSite || "Этот сайт не даёт перематывать");
   setOff($dkFwd, canSkip(s), "Вперёд на 10 секунд", noSite || "Этот сайт не даёт перематывать");
 
@@ -1378,6 +1563,7 @@ function onDeckClick(e) {
   else if (act === "reload") run(browser.tabs.reload(s.tabId));
   else if (act === "back") skipBy(s, -SKIP_SEC);
   else if (act === "forward") skipBy(s, SKIP_SEC);
+  else if (act === "rate") openRateMenu(s);
   else sendMediaControl(s, act);
 }
 
@@ -1441,6 +1627,59 @@ $deckBar.addEventListener(
     if (!deckSession || !canSkip(deckSession)) return;
     e.preventDefault();
     if (e.deltaY) skipBy(deckSession, Math.sign(e.deltaY) * -WHEEL_SEEK_SEC);
+  },
+  { passive: false }
+);
+
+// ---------------------------------------------------------------- скорость
+//
+// Значок «1×» справа от полосы позиции: клик — меню скоростей, колесо на
+// себя (вниз) — быстрее на 0,25×, от себя — медленнее (как громкость).
+// Ставится прямо плееру страницы, поэтому есть только у настоящего
+// <audio>/<video>; следующий трек того же сайта получает ту же скорость.
+
+const $deckRate = document.getElementById("deck-rate");
+$deckRate.dataset.act = "rate";
+
+function updateRate(s) {
+  $deckRate.hidden = !s.canRate;
+  if (!s.canRate) return;
+  const rate = Number.isFinite(s.rate) ? s.rate : 1;
+  const text = formatRate(rate);
+  if ($deckRate.textContent !== text) $deckRate.textContent = text;
+  $deckRate.classList.toggle("changed", Math.abs(rate - 1) > 0.001);
+  const keys = [keyHint("speed-up") && "быстрее " + keyHint("speed-up"), keyHint("speed-down") && "медленнее " + keyHint("speed-down")].filter(Boolean);
+  const tip = "Скорость воспроизведения. Клик — выбрать, колесо — ±0,25×" + (keys.length ? ` (${keys.join(", ")})` : "");
+  if ($deckRate.title !== tip) $deckRate.title = tip;
+}
+
+function setRate(s, rate) {
+  if (Math.abs((s.rate || 1) - rate) < 0.001) return;
+  sendMediaControl(s, "rate", undefined, rate);
+}
+
+function openRateMenu(s) {
+  const r = $deckRate.getBoundingClientRect();
+  const current = Number.isFinite(s.rate) ? s.rate : 1;
+  const presets = RATE_PRESETS.includes(current) ? RATE_PRESETS : [...RATE_PRESETS, current].sort((a, b) => a - b);
+  const items = presets.map((rate) => ({
+    label: rate === 1 ? "1× — обычная" : formatRate(rate),
+    checked: Math.abs(rate - current) < 0.001,
+    shortcut: rate === 1 ? keyHint("speed-reset") : "",
+    action: () => setRate(s, rate),
+  }));
+  // Меню встаёт над значком, правым краем к нему (openMenu прижмёт к краям окна).
+  openMenu(items, r.left, r.top - 8 - items.length * 25);
+  $menu.style.left = Math.max(4, Math.min(r.right - $menu.offsetWidth, innerWidth - $menu.offsetWidth - 4)) + "px";
+}
+
+$deckRate.addEventListener(
+  "wheel",
+  (e) => {
+    const s = deckSession;
+    if (!s || !s.canRate || !e.deltaY) return;
+    e.preventDefault();
+    setRate(s, stepRate(Number.isFinite(s.rate) ? s.rate : 1, e.deltaY > 0 ? 1 : -1));
   },
   { passive: false }
 );
@@ -1666,6 +1905,10 @@ function listenMedia() {
     if (msg && msg.type === "mediaState" && Array.isArray(msg.sessions)) {
       state.media = msg.sessions;
       scheduleRender();
+    } else if (msg && msg.type === "micState" && msg.mic && typeof msg.mic === "object") {
+      // Микрофон переключили горячей клавишей (или из панели другого окна).
+      state.mic = new Map(Object.entries(msg.mic).map(([id, m]) => [Number(id), m]));
+      scheduleRender();
     }
   });
   browser.tabs.onUpdated.addListener(
@@ -1680,7 +1923,8 @@ function listenMedia() {
 
 // ---------------------------------------------------------------- панель сверху
 //
-// Сводка (сколько вкладок и сколько из них в памяти) и две массовые кнопки:
+// Сводка (сколько вкладок и сколько из них в памяти), настройки, плагины и
+// массовые кнопки: закрыть дубликаты (видна, только когда они есть),
 // выгрузить из памяти все вкладки окна и закрыть все вкладки вне групп.
 // Выгрузка безопасна и срабатывает сразу; закрытие — со вторым нажатием:
 // кнопка краснеет и ждёт 3 секунды. Подписей у кнопок нет — только значок,
@@ -1692,6 +1936,9 @@ const $tbLoaded = document.getElementById("tb-loaded");
 const $tbDiscard = document.getElementById("tb-discard");
 const $tbClose = document.getElementById("tb-close-loose");
 const $tbPlugins = document.getElementById("tb-plugins");
+const $tbSettings = document.getElementById("tb-settings");
+const $tbDups = document.getElementById("tb-dups");
+const $newTabBtn = document.getElementById("new-tab");
 let closeConfirmTimer = 0;
 
 // Что можно выгрузить: не активная (её Firefox не выгружает), не уже
@@ -1719,6 +1966,14 @@ function renderToolbar() {
     ? `Выгрузить из памяти все вкладки (${discard}). Активная и звучащие остаются.`
     : "Выгружать нечего";
 
+  const dups = state.settings.duplicates ? state.dupsToClose.length : 0;
+  $tbDups.hidden = dups === 0;
+  setCount($tbDups, dups);
+  $tbDups.title = withHint(`Закрыть дубликаты (${dups}): от каждой страницы останется одна вкладка`, "close-duplicates");
+  $tbSettings.title = "Настройки: недавно закрытые, дубликаты, контейнеры, автогруппировка, горячие клавиши";
+  const newTip = withHint("Новая вкладка (или двойной клик по пустому месту)", "ff-new-tab");
+  if ($newTabBtn.title !== newTip) $newTabBtn.title = newTip;
+
   const loose = looseTabIds().length;
   $tbClose.disabled = loose === 0;
   setCount($tbClose, loose);
@@ -1744,6 +1999,10 @@ function onToolbarClick(e) {
   if (!btn || btn.disabled) return;
   if (btn === $tbPlugins) {
     run(openPluginsMenu());
+  } else if (btn === $tbSettings) {
+    run(browser.runtime.openOptionsPage());
+  } else if (btn === $tbDups) {
+    run(browser.tabs.remove(duplicatesToClose([...state.tabs.values()])));
   } else if (btn === $tbDiscard) {
     run(browser.tabs.discard(discardableIds([...state.tabs.values()])));
   } else if (btn === $tbClose) {
@@ -1801,6 +2060,171 @@ function pluginButton(key) {
   return null;
 }
 
+// ---------------------------------------------------------------- недавно закрытые
+//
+// Блок над плеером: заголовок со счётчиком (клик — свернуть/развернуть,
+// запоминается) и список вкладок, закрытых в этом окне, и закрытых окон.
+// Клик — вернуть (Firefox восстановит её с историей), средняя кнопка или
+// крестик — забыть, корзина в заголовке — забыть всё. Список ведёт сам
+// Firefox (sessions), панель его только показывает.
+
+const CLOSED_FETCH = 25;
+const CLOSED_TICK_MS = 60000;
+const $closed = document.getElementById("closed");
+const $closedHead = document.getElementById("closed-head");
+const $closedList = document.getElementById("closed-list");
+const $closedCount = document.getElementById("closed-count");
+const hasSessions = !!(browser.sessions && browser.sessions.getRecentlyClosed);
+let closedRowsShown = [];
+let closedTimer = 0;
+let closedTick = 0;
+// Идёт «Очистить список»: каждое forget* — событие sessions.onChanged,
+// перечитываем один раз в конце.
+let closedClearing = false;
+
+async function loadClosed() {
+  state.closed = await browser.sessions.getRecentlyClosed({ maxResults: CLOSED_FETCH });
+  renderClosed();
+}
+
+function listenClosed() {
+  if (!hasSessions) return;
+  run(loadClosed());
+  // Закрытие пачки вкладок — пачка событий: перечитываем один раз.
+  browser.sessions.onChanged.addListener(() => {
+    if (closedClearing) return;
+    clearTimeout(closedTimer);
+    closedTimer = setTimeout(() => run(loadClosed()), 50);
+  });
+}
+
+function renderClosed() {
+  const s = state.settings;
+  const rows = hasSessions && s.closedShown ? closedRows(state.closed, state.windowId, s.closedCount) : [];
+  closedRowsShown = rows;
+  $closed.hidden = rows.length === 0;
+  $closed.classList.toggle("open", s.closedOpen);
+  $closedCount.textContent = rows.length ? String(rows.length) : "";
+  $closedHead.title = (s.closedOpen ? "Свернуть" : "Показать недавно закрытые") + ". " + withHint("Вернуть последнюю закрытую вкладку", "ff-reopen");
+
+  $closedList.textContent = "";
+  if (s.closedOpen) {
+    const now = Date.now();
+    for (const row of rows) $closedList.append(makeClosedRow(row, now));
+  }
+
+  // Подписи «5 мин» стареют — раз в минуту обновляем, пока список виден.
+  const ticking = s.closedOpen && rows.length > 0;
+  if (ticking && !closedTick) closedTick = setInterval(renderClosed, CLOSED_TICK_MS);
+  else if (!ticking && closedTick) {
+    clearInterval(closedTick);
+    closedTick = 0;
+  }
+}
+
+function makeClosedRow(row, now) {
+  const el = document.createElement("div");
+  el.className = "ctab " + row.kind;
+  el.dataset.sid = row.sessionId;
+  const icon = makeIcon();
+  setIcon(icon, row.favIconUrl || iconFor({ url: row.url }, state.favicons));
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = row.title || "Без названия";
+  el.append(icon, title);
+  if (row.kind === "window") {
+    const count = document.createElement("span");
+    count.className = "wcount";
+    count.textContent = String(row.count);
+    el.append(count);
+    el.title = `Окно: ${pluralTabs(row.count)}. Клик — открыть снова`;
+  } else {
+    el.title = (row.url && row.url !== row.title ? row.title + "\n" + row.url : row.title) + "\nКлик — открыть снова";
+  }
+  const ago = document.createElement("span");
+  ago.className = "ago";
+  ago.textContent = timeAgo(row.closedAt, now);
+  const forget = document.createElement("span");
+  forget.className = "close";
+  forget.dataset.icon = "x";
+  forget.title = "Убрать из списка";
+  el.append(ago, forget);
+  return el;
+}
+
+function closedRowOf(node) {
+  const el = elementOf(node);
+  const rowEl = el && el.closest(".ctab");
+  return rowEl ? closedRowsShown.find((r) => r.sessionId === rowEl.dataset.sid) || null : null;
+}
+
+function restoreClosed(row) {
+  return browser.sessions.restore(row.sessionId);
+}
+
+function forgetClosed(rows) {
+  return Promise.all(
+    rows.map((row) =>
+      row.kind === "window"
+        ? browser.sessions.forgetClosedWindow(row.sessionId)
+        : browser.sessions.forgetClosedTab(state.windowId, row.sessionId)
+    )
+  );
+}
+
+// «Очистить список» — весь список этого окна, а не только показанные строки
+// (иначе сразу всплывает следующая порция). getRecentlyClosed отдаёт не
+// больше CLOSED_FETCH за раз — забываем порциями, пока есть что; число
+// проходов ограничено на случай, если Firefox что-то не забудет.
+async function forgetAllClosed() {
+  closedClearing = true;
+  clearTimeout(closedTimer);
+  try {
+    for (let i = 0; i < 20; i++) {
+      const sessions = await browser.sessions.getRecentlyClosed({ maxResults: CLOSED_FETCH });
+      const rows = closedRows(sessions, state.windowId, Infinity);
+      if (!rows.length) break;
+      await forgetClosed(rows);
+    }
+  } finally {
+    closedClearing = false;
+    await loadClosed();
+  }
+}
+
+function onClosedClick(e) {
+  if (e.target.closest("#closed-clear")) {
+    run(forgetAllClosed());
+    return;
+  }
+  if ($closedHead.contains(e.target)) {
+    run(saveSettings({ closedOpen: !state.settings.closedOpen }));
+    renderClosed();
+    return;
+  }
+  const row = closedRowOf(e.target);
+  if (!row) return;
+  if (e.target.classList.contains("close")) run(forgetClosed([row]));
+  else run(restoreClosed(row));
+}
+
+function closedMenu(target) {
+  const row = closedRowOf(target);
+  const items = [];
+  if (row) {
+    items.push(
+      { label: row.kind === "window" ? "Открыть окно снова" : "Открыть снова", action: () => restoreClosed(row) },
+      { label: "Убрать из списка", action: () => forgetClosed([row]) },
+      "-"
+    );
+  }
+  items.push(
+    { label: "Очистить список", danger: true, action: () => forgetAllClosed() },
+    { label: "Скрыть блок (вернуть — в настройках)", action: () => saveSettings({ closedShown: false }).then(renderClosed) }
+  );
+  return items;
+}
+
 // ---------------------------------------------------------------- мышь
 
 const DBLCLICK_WAIT_MS = 230;
@@ -1819,6 +2243,11 @@ document.addEventListener("click", (e) => {
 
   if (e.target.closest("#toolbar")) {
     onToolbarClick(e);
+    return;
+  }
+
+  if ($closed.contains(e.target)) {
+    onClosedClick(e);
     return;
   }
 
@@ -1856,6 +2285,12 @@ document.addEventListener("click", (e) => {
     return;
   }
 
+  if (e.target.classList.contains("dup")) {
+    const tab = state.tabs.get(id);
+    if (tab) run(browser.tabs.remove(duplicatesOf(tab, [...state.tabs.values()])));
+    return;
+  }
+
 
   if (e.ctrlKey || e.metaKey) {
     const next = new Set(state.selected);
@@ -1887,6 +2322,11 @@ document.addEventListener("mousedown", (e) => {
 });
 document.addEventListener("auxclick", (e) => {
   if (e.button !== 1) return;
+  const closedRow = closedRowOf(e.target);
+  if (closedRow) {
+    run(forgetClosed([closedRow]));
+    return;
+  }
   const id = tabIdOf(e.target);
   if (id !== null) run(browser.tabs.remove(id));
 });
@@ -2087,6 +2527,11 @@ function clearDragFeedback() {
   clearTimeout(expandTimer);
   expandGid = null;
   for (const el of document.querySelectorAll(".dragging")) el.classList.remove("dragging");
+}
+
+// «в 1 вкладке», «в 3 вкладках».
+function inTabs(n) {
+  return n % 10 === 1 && n % 100 !== 11 ? n + " вкладке" : n + " вкладках";
 }
 
 function pluralTabs(n) {
@@ -2317,12 +2762,19 @@ function openMenu(items, x, y) {
       continue;
     }
     const mi = document.createElement("div");
-    mi.className = item.danger ? "mi danger" : "mi";
+    mi.className = item.danger ? "mi danger" : item.back ? "mi back" : "mi";
     mi.setAttribute("role", "menuitem");
-    if (item.color) {
+    if (item.back) {
+      const icon = document.createElement("span");
+      icon.className = "mi-icon";
+      icon.dataset.icon = "chevron-left";
+      mi.append(icon);
+    }
+    if (item.color || item.colorCode !== undefined) {
       const dot = document.createElement("span");
-      dot.className = "dot";
-      setColorVar(dot, item.color);
+      dot.className = item.colorCode === "" ? "dot none" : "dot";
+      if (item.colorCode) dot.style.setProperty("--gc", item.colorCode);
+      else if (item.color) setColorVar(dot, item.color);
       mi.append(dot);
     }
     if (item.checked !== undefined) {
@@ -2332,9 +2784,29 @@ function openMenu(items, x, y) {
       mi.append(check);
     }
     if (item.title) mi.title = item.title;
-    mi.append(item.label);
+    const label = document.createElement("span");
+    label.className = "mi-label";
+    label.textContent = item.label;
+    mi.append(label);
+    // Подменю открывается на месте этого же меню, со строкой «назад».
+    if (item.submenu) {
+      const more = document.createElement("span");
+      more.className = "mi-more";
+      more.dataset.icon = "chevron-right";
+      mi.append(more);
+    } else if (item.shortcut) {
+      const kbd = document.createElement("span");
+      kbd.className = "mi-kbd";
+      kbd.textContent = item.shortcut;
+      mi.append(kbd);
+    }
     mi.addEventListener("click", () => {
       closeMenu();
+      if (item.submenu) {
+        const back = { label: item.label, back: true, action: () => openMenu(items, x, y) };
+        openMenu([back, "-", ...item.submenu()], x, y);
+        return;
+      }
       run(item.action());
     });
     $menu.append(mi);
@@ -2373,7 +2845,11 @@ function tabMenu(id) {
   }
 
   const muted = !!(first.mutedInfo && first.mutedInfo.muted);
-  items.push({ label: (muted ? "Включить звук" : "Выключить звук") + suffix, action: () => setMuted(ids, !muted) });
+  items.push({
+    label: (muted ? "Включить звук" : "Выключить звук") + suffix,
+    shortcut: first.active && n === 1 ? keyHint("ff-mute") : "",
+    action: () => setMuted(ids, !muted),
+  });
   items.push({
     label: "Громкость…",
     action: () => {
@@ -2383,7 +2859,11 @@ function tabMenu(id) {
   });
   if (n === 1 && usesMic(first)) {
     const m = micOf(id);
-    items.push({ label: m.muted ? "Включить микрофон" : "Выключить микрофон", action: () => setMic([id], { muted: !m.muted }) });
+    items.push({
+      label: m.muted ? "Включить микрофон" : "Выключить микрофон",
+      shortcut: keyHint("toggle-mic"),
+      action: () => setMic([id], { muted: !m.muted }),
+    });
     items.push({
       label: "Громкость микрофона…",
       action: () => {
@@ -2393,8 +2873,10 @@ function tabMenu(id) {
     });
   }
   items.push("-");
+  // Сочетания Firefox действуют на активную вкладку — у неё их и показываем.
+  const own = (name) => (first.active && n === 1 ? keyHint(name) : "");
   items.push(
-    { label: "Перезагрузить" + suffix, action: () => Promise.all(ids.map((x) => browser.tabs.reload(x))) },
+    { label: "Перезагрузить" + suffix, shortcut: own("ff-reload"), action: () => Promise.all(ids.map((x) => browser.tabs.reload(x))) },
     { label: "Дублировать" + suffix, action: () => Promise.all(ids.map((x) => browser.tabs.duplicate(x))) },
     {
       label: (first.pinned ? "Открепить" : "Закрепить") + suffix,
@@ -2403,14 +2885,26 @@ function tabMenu(id) {
     {
       label: "Выгрузить из памяти" + suffix,
       action: () => browser.tabs.discard(tabs.filter((t) => !t.active).map((t) => t.id)),
-    },
-    "-",
+    }
+  );
+  if (canUseContainers() && tabs.some((t) => reopenProps(t))) {
+    items.push({
+      label: "Открыть в контейнере" + suffix,
+      submenu: () => containerItems((store) => reopenInContainer(ids, store), n === 1 ? first.cookieStoreId || DEFAULT_STORE : undefined),
+    });
+  }
+  const dupIds = n === 1 ? duplicatesOf(first, [...state.tabs.values()]) : [];
+  items.push("-");
+  if (dupIds.length) {
+    items.push({ label: `Закрыть дубликаты (${dupIds.length})`, action: () => browser.tabs.remove(dupIds) });
+  }
+  items.push(
     {
       label: "Закрыть другие вкладки",
       action: () =>
         browser.tabs.remove([...state.tabs.values()].filter((t) => !t.pinned && !ids.includes(t.id)).map((t) => t.id)),
     },
-    { label: n > 1 ? `Закрыть вкладки (${n})` : "Закрыть вкладку", danger: true, action: () => browser.tabs.remove(ids) }
+    { label: n > 1 ? `Закрыть вкладки (${n})` : "Закрыть вкладку", danger: true, shortcut: own("ff-close"), action: () => browser.tabs.remove(ids) }
   );
   return items;
 }
@@ -2424,6 +2918,9 @@ function groupMenu(gid) {
     { swatches: true, current: groupColor(g), pick: (color) => run(browser.tabGroups.update(gid, { color })) },
     { label: g.collapsed ? "Развернуть" : "Свернуть", action: () => browser.tabGroups.update(gid, { collapsed: !g.collapsed }) },
     { label: "Новая вкладка в группе", action: () => newTabInGroup(gid) },
+    ...(canUseContainers()
+      ? [{ label: "Новая вкладка в группе в контейнере", submenu: () => containerItems((store) => newTabInGroup(gid, { cookieStoreId: store })) }]
+      : []),
     {
       label: `Выгрузить из памяти (${discardableIds(tabsOfGroup(gid)).length})`,
       action: () => browser.tabs.discard(discardableIds(tabsOfGroup(gid))),
@@ -2434,14 +2931,26 @@ function groupMenu(gid) {
   ];
 }
 
+function newTabMenu() {
+  const items = [{ label: "Новая вкладка", shortcut: keyHint("ff-new-tab"), action: () => newTab() }];
+  if (canUseContainers()) {
+    items.push({ label: "Новая вкладка в контейнере", submenu: () => containerItems((store) => newTab({ cookieStoreId: store })) });
+  }
+  return items;
+}
+
 document.addEventListener("contextmenu", (e) => {
   if (e.target.tagName === "INPUT") return;
   e.preventDefault();
   if ($player.contains(e.target) || e.target.closest("#toolbar")) return;
+  if ($closed.contains(e.target)) {
+    const items = closedMenu(e.target);
+    if (items.length) openMenu(items, e.clientX, e.clientY);
+    return;
+  }
   const gid = groupIdOf(e.target);
   const id = tabIdOf(e.target);
-  const items =
-    gid !== null ? groupMenu(gid) : id !== null ? tabMenu(id) : [{ label: "Новая вкладка", action: () => newTab() }];
+  const items = gid !== null ? groupMenu(gid) : id !== null ? tabMenu(id) : newTabMenu();
   if (items.length) openMenu(items, e.clientX, e.clientY);
 });
 
@@ -2473,19 +2982,25 @@ $scroll.addEventListener(
   try {
     const [win, stored, volumes, media, mic] = await Promise.all([
       browser.windows.getCurrent(),
-      browser.storage.local.get("favicons").catch(() => ({})),
+      browser.storage.local.get(["favicons", SidebarSettings.SETTINGS_KEY]).catch(() => ({})),
       browser.runtime.sendMessage({ type: "getVolumes" }).catch(() => ({})),
       browser.runtime.sendMessage({ type: "getMedia" }).catch(() => []),
       browser.runtime.sendMessage({ type: "getMic" }).catch(() => ({})),
     ]);
     state.windowId = win.id;
+    state.incognito = !!win.incognito;
     state.media = Array.isArray(media) ? media : [];
     for (const [id, v] of Object.entries(volumes || {})) state.volumes.set(Number(id), v);
     for (const [id, m] of Object.entries(mic || {})) state.mic.set(Number(id), m);
     if (stored.favicons && typeof stored.favicons === "object") {
       state.favicons = new Map(Object.entries(stored.favicons));
     }
+    state.settings = SidebarSettings.normalizeSettings(stored[SidebarSettings.SETTINGS_KEY]);
     loadPlugins().catch(report);
+    listenSettings();
+    listenShortcuts();
+    listenContainers();
+    listenClosed();
     listenTheme();
     listenMedia();
     listen();

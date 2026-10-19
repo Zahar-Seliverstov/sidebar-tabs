@@ -78,6 +78,10 @@ function createMockBrowser({ initialStorage = {}, withTabGroups = false } = {}) 
         if (browser.__tabsQueryImpl) return browser.__tabsQueryImpl(queryInfo);
         return [];
       },
+      get: async (tabId) => {
+        if (browser.__tabsGetImpl) return browser.__tabsGetImpl(tabId);
+        throw new Error(`Invalid tab ID: ${tabId}`);
+      },
       // tabs.group()/tabGroups.* — относительно новый API Firefox. По умолчанию
       // отсутствует в моке, как на старом Firefox: код должен деградировать
       // без ошибок (typeof browser.tabs.group !== "function"). Включается
@@ -165,14 +169,26 @@ function createMockBrowser({ initialStorage = {}, withTabGroups = false } = {}) 
         set: async (obj) => {
           calls.storageSet.push(obj);
           if (browser.__storageSetImpl) await browser.__storageSetImpl(obj);
+          const changes = {};
+          for (const [k, v] of Object.entries(obj)) changes[k] = { oldValue: storageData[k], newValue: v };
           Object.assign(storageData, obj);
+          await browser.storage.onChanged.emit(changes, "local");
         },
       },
+      onChanged: createEvent(),
     },
     runtime: {
       onStartup: createEvent(),
       onMessage: createEvent(),
       getURL: (path) => "moz-extension://test/" + path.replace(/^\//, ""),
+      // Как в Firefox без открытых панелей: получателя нет.
+      sendMessage: async (msg) => {
+        if (browser.__runtimeSendMessageImpl) return browser.__runtimeSendMessageImpl(msg);
+        throw new Error("Could not establish connection. Receiving end does not exist.");
+      },
+    },
+    commands: {
+      onCommand: createEvent(),
     },
     __calls: calls,
     __storageData: storageData,

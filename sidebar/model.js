@@ -11,7 +11,9 @@
 
 const NO_GROUP = -1;
 
-const GROUP_COLORS = ["grey", "blue", "purple", "cyan", "green", "yellow", "orange", "red", "pink"];
+// Цвета групп — из shared/settings.js (подключается раньше этого файла).
+const GROUP_COLORS = (typeof module !== "undefined" && module.exports ? require("../shared/settings.js") : SidebarSettings)
+  .GROUP_COLORS;
 
 function isGrouped(tab) {
   return tab.groupId !== undefined && tab.groupId !== NO_GROUP;
@@ -208,6 +210,138 @@ function dropZone(offset, size, allowOnto) {
   return "onto";
 }
 
+// ---------------------------------------------------------------- дубликаты
+
+const DUP_SCHEMES = ["http:", "https:", "file:", "ftp:"];
+
+// «Та же страница»: адрес без #якоря в том же контейнере (в разных
+// контейнерах — разные куки, это разные страницы). Служебные страницы
+// (новая вкладка, about:) дубликатами не считаются.
+function dupKey(tab) {
+  if (!tab || !tab.url) return null;
+  let u;
+  try {
+    u = new URL(tab.url);
+  } catch (e) {
+    return null;
+  }
+  if (!DUP_SCHEMES.includes(u.protocol)) return null;
+  u.hash = "";
+  return (tab.cookieStoreId || "") + " " + u.href;
+}
+
+// key → вкладки одной страницы (по порядку в окне), только где их больше одной.
+function duplicateSets(tabs) {
+  const byKey = new Map();
+  for (const t of tabs) {
+    if (t.hidden) continue;
+    const key = dupKey(t);
+    if (key === null) continue;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(t);
+  }
+  for (const [key, list] of byKey) {
+    if (list.length < 2) byKey.delete(key);
+    else list.sort((a, b) => a.index - b.index);
+  }
+  return byKey;
+}
+
+// Какую из одинаковых вкладок оставить: закреплённую, затем активную,
+// затем загруженную, затем первую по порядку.
+function keeperOf(list) {
+  const rank = (t) => (t.pinned ? 0 : t.active ? 1 : !t.discarded ? 2 : 3);
+  return list.reduce((best, t) => (rank(t) < rank(best) || (rank(t) === rank(best) && t.index < best.index) ? t : best));
+}
+
+// Что закрыть, чтобы от каждой страницы осталась одна вкладка. Закреплённые
+// не закрываются никогда, даже если их копий несколько. sets — уже
+// посчитанный duplicateSets(tabs), чтобы панель не считала его дважды.
+function duplicatesToClose(tabs, sets = duplicateSets(tabs)) {
+  const ids = [];
+  for (const list of sets.values()) {
+    const keep = keeperOf(list);
+    for (const t of list) if (t !== keep && !t.pinned) ids.push(t.id);
+  }
+  return ids;
+}
+
+// Остальные вкладки той же страницы, что и tab (её саму и закреплённые оставляем).
+function duplicatesOf(tab, tabs) {
+  const key = dupKey(tab);
+  if (key === null) return [];
+  return tabs.filter((t) => t.id !== tab.id && !t.hidden && !t.pinned && dupKey(t) === key).map((t) => t.id);
+}
+
+// ---------------------------------------------------------------- контейнеры
+
+const DEFAULT_STORE = "firefox-default";
+
+// Контейнер вкладки (из contextualIdentities) или null — обычная вкладка.
+function containerOf(tab, containers) {
+  const id = tab && tab.cookieStoreId;
+  if (!id || id === DEFAULT_STORE || !containers) return null;
+  return containers.get(id) || null;
+}
+
+// Сменить контейнер у открытой вкладки нельзя — её переоткрывают в нужном.
+// Что передать в tabs.create: { url } для обычной страницы, {} для новой
+// вкладки, null — так нельзя (about:, file:, страницы расширений
+// tabs.create не открывает).
+function reopenProps(tab) {
+  const url = tab && tab.url;
+  if (!url || url === "about:newtab" || url === "about:blank" || url === "about:home") return {};
+  return /^(https?|ftp):/i.test(url) ? { url } : null;
+}
+
+// ---------------------------------------------------------------- недавно закрытые
+
+// sessions.getRecentlyClosed() → строки блока: вкладки, закрытые в этом окне,
+// и закрытые окна целиком — по времени закрытия, свежие сверху.
+function closedRows(sessions, windowId, limit) {
+  const rows = [];
+  for (const s of sessions || []) {
+    const at = closedAt(s.lastModified);
+    if (s.tab && s.tab.sessionId) {
+      if (s.tab.windowId !== undefined && s.tab.windowId !== windowId) continue;
+      const t = s.tab;
+      rows.push({ kind: "tab", sessionId: t.sessionId, title: t.title || t.url || "", url: t.url || "", favIconUrl: t.favIconUrl || "", closedAt: at });
+    } else if (s.window && s.window.sessionId) {
+      const tabs = s.window.tabs || [];
+      const active = tabs.find((t) => t.active) || tabs[0];
+      rows.push({
+        kind: "window",
+        sessionId: s.window.sessionId,
+        title: active ? active.title || active.url || "" : "",
+        count: tabs.length,
+        favIconUrl: (active && active.favIconUrl) || "",
+        url: (active && active.url) || "",
+        closedAt: at,
+      });
+    }
+  }
+  rows.sort((a, b) => b.closedAt - a.closedAt);
+  return rows.slice(0, limit);
+}
+
+// Firefox отдаёт миллисекунды, Chrome — секунды; на всякий случай понимаем оба.
+function closedAt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+// «Сколько назад» коротко: «сейчас», «5 мин», «3 ч», «2 дн».
+function timeAgo(at, now) {
+  if (!at) return "";
+  const min = Math.floor((now - at) / 60000);
+  if (min < 1) return "сейчас";
+  if (min < 60) return min + " мин";
+  const h = Math.floor(min / 60);
+  if (h < 24) return h + " ч";
+  return Math.floor(h / 24) + " дн";
+}
+
 // ---------------------------------------------------------------- плеер
 
 // Строки плеера: по одной на вкладку (из нескольких звучащих фреймов
@@ -244,6 +378,60 @@ function formatTime(seconds) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
+// Скорость воспроизведения: колесо и клавиши шагают по сетке RATE_STEP
+// в пределах RATE_MIN…RATE_MAX; меню предлагает RATE_PRESETS.
+const RATE_MIN = 0.25;
+const RATE_MAX = 4;
+const RATE_STEP = 0.25;
+const RATE_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+
+// Следующая скорость в сторону dir (+1/-1). С «нестандартной» скорости
+// (сайт поставил 1,1) первый шаг приводит на ближайшую точку сетки. Шаг
+// зажат в RATE_MIN…RATE_MAX, но не идёт против dir: с 8× «быстрее» остаётся
+// 8× (а не 4×), «медленнее» — сразу 4×.
+function stepRate(rate, dir) {
+  const r = Number.isFinite(rate) && rate > 0 ? rate : 1;
+  const grid = r / RATE_STEP;
+  const next = (dir > 0 ? Math.floor(grid + 1e-9) + 1 : Math.ceil(grid - 1e-9) - 1) * RATE_STEP;
+  const clamped = Math.min(RATE_MAX, Math.max(RATE_MIN, next));
+  return dir > 0 ? Math.max(r, clamped) : Math.min(r, clamped);
+}
+
+// 1 → «1×», 1.25 → «1,25×».
+function formatRate(rate) {
+  const r = Number.isFinite(rate) && rate > 0 ? rate : 1;
+  return String(Math.round(r * 100) / 100).replace(".", ",") + "×";
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { NO_GROUP, GROUP_COLORS, isGrouped, buildLayout, iconFor, planDrop, planGroupDrop, groupMembers, computeMoveIndex, rangeBetween, dropZone, mediaRows, mediaPosition, formatTime };
+  module.exports = {
+    NO_GROUP,
+    GROUP_COLORS,
+    isGrouped,
+    buildLayout,
+    iconFor,
+    planDrop,
+    planGroupDrop,
+    groupMembers,
+    computeMoveIndex,
+    rangeBetween,
+    dropZone,
+    dupKey,
+    duplicateSets,
+    duplicatesToClose,
+    duplicatesOf,
+    DEFAULT_STORE,
+    containerOf,
+    reopenProps,
+    closedRows,
+    timeAgo,
+    mediaRows,
+    mediaPosition,
+    formatTime,
+    RATE_MIN,
+    RATE_MAX,
+    RATE_PRESETS,
+    stepRate,
+    formatRate,
+  };
 }

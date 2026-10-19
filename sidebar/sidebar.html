@@ -9,7 +9,9 @@
   <div id="toolbar">
     <span id="tb-info"><b id="tb-total"></b><span id="tb-loaded"></span></span>
     <div class="tb-actions">
+      <button id="tb-settings" class="tb-btn" type="button" data-icon="settings" title="Настройки"></button>
       <button id="tb-plugins" class="tb-btn" type="button" data-icon="puzzle" title="Плагины"></button>
+      <button id="tb-dups" class="tb-btn" type="button" data-icon="copy" hidden><span class="tb-count"></span></button>
       <button id="tb-discard" class="tb-btn" type="button" data-icon="moon"><span class="tb-count"></span></button>
       <button id="tb-close-loose" class="tb-btn danger" type="button" data-icon="trash-2"><span class="tb-count"></span></button>
     </div>
@@ -22,6 +24,16 @@
     </button>
     <div id="filler"></div>
   </div>
+
+  <section id="closed" hidden>
+    <div id="closed-head">
+      <span class="chev"></span>
+      <span class="closed-title">Недавно закрытые</span>
+      <span id="closed-count" class="count"></span>
+      <button id="closed-clear" type="button" data-icon="trash-2" title="Очистить список"></button>
+    </div>
+    <div id="closed-list"></div>
+  </section>
 
   <section id="player" hidden>
     <div id="player-bg" aria-hidden="true"></div>
@@ -36,6 +48,7 @@
         </div>
         <span id="deck-dur" class="deck-time"></span>
         <span id="deck-live">Эфир</span>
+        <button id="deck-rate" type="button" hidden></button>
       </div>
       <div id="deck-note" role="status" hidden>
         <span id="deck-note-text"></span>
@@ -54,6 +67,7 @@
   <div id="menu" role="menu" hidden></div>
   <div id="drag-image" aria-hidden="true"></div>
   <script src="vendor/motion.js"></script>
+  <script src="../shared/settings.js"></script>
   <script src="model.js"></script>
   <script src="sidebar.js"></script>
 </body>

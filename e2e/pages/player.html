@@ -9,12 +9,15 @@
 // dur=секунды, muted=1 (беззвучное автовоспроизведение), loop=1,
 // slow=мс (обработчики сайта срабатывают с задержкой — как у тяжёлых сайтов),
 // busy=мс (страница периодически занимает поток на столько — тяжёлый сайт),
-// like=1 — у сайта своя кнопка «нравится» (для тестового плагина e2e-like).
+// like=1 — у сайта своя кнопка «нравится» (для тестового плагина e2e-like),
+// load=1 — без newPerTrack: следующий трек — новый src и явный load() того же плеера.
 const q = new URLSearchParams(location.search);
 const mode = q.get("mode") || "detached";
 const dur = Number(q.get("dur") || 120);
 let track = 1;
 let player = null;
+// Журнал событий загрузки и скорости плеера — для разбора сценариев скорости.
+const events = [];
 
 function makePlayer() {
   let el;
@@ -22,6 +25,9 @@ function makePlayer() {
   else {
     el = document.createElement(mode === "video" ? "video" : "audio");
     (document.body || document.documentElement).append(el);
+  }
+  for (const type of ["emptied", "loadstart", "ratechange", "loadedmetadata", "play", "playing"]) {
+    el.addEventListener(type, () => events.push(`${type} track=${track} rate=${el.playbackRate} rs=${el.readyState}`));
   }
   el.src = toneUrl(dur, 300 + track * 40);
   if (q.get("muted") === "1") el.muted = true;
@@ -47,6 +53,7 @@ const api = {
       player = makePlayer();
     } else {
       player.src = toneUrl(dur, 300 + track * 40);
+      if (q.get("load") === "1") player.load();
     }
     setMeta();
     return player.play();
@@ -57,6 +64,8 @@ const api = {
     track,
     t: player.currentTime,
     liked: document.getElementById("like")?.dataset.on === "1",
+    rate: player.playbackRate,
+    events: events.slice(-20),
   }),
 };
 window.api = api;

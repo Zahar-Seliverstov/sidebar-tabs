@@ -104,12 +104,21 @@ button {
 
 /* Сводка в две строчки: сколько вкладок и сколько из них в памяти. */
 #tb-info {
-  flex: none;
+  /* Сжимается раньше кнопок: при узкой панели текст обрезается, а не вылезает. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   line-height: 1.15;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+#tb-total,
+#tb-loaded {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #tb-total {
@@ -205,6 +214,10 @@ button {
 }
 
 .tb-count:empty {
+  display: none;
+}
+
+.tb-btn[hidden] {
   display: none;
 }
 
@@ -375,6 +388,53 @@ button {
 
 .loading .fav {
   opacity: 0.45;
+}
+
+/* Дубликат: значок «копия» — страница открыта ещё где-то; клик закрывает копии. */
+.dup {
+  display: none;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--c-orange);
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+
+.tab.has-dup .dup {
+  display: flex;
+}
+
+.dup:hover {
+  background: var(--press);
+}
+
+.dup[data-icon]::before {
+  width: 12px;
+  height: 12px;
+}
+
+/* Контейнер Firefox: цветная полоска справа (слева — линия группы). */
+.tab.ctx::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--cc);
+}
+
+.pin.ctx {
+  box-shadow: inset 0 -2px 0 var(--cc);
+}
+
+.pin.ctx.active {
+  box-shadow: var(--shadow), inset 0 -2px 0 var(--cc);
 }
 
 /* ---------- регулятор громкости: значок, который раздвигается ---------- */
@@ -740,6 +800,38 @@ button {
   background: var(--selected);
 }
 
+.mi-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Сочетание клавиш справа от пункта. */
+.mi-kbd {
+  flex: none;
+  margin-left: 18px;
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.mi-more,
+.mi-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--dim);
+}
+
+.mi-more {
+  margin-left: 12px;
+}
+
+.mi.back {
+  color: var(--dim);
+  font-weight: 600;
+}
+
 .mi.danger {
   color: var(--c-red);
 }
@@ -754,6 +846,12 @@ button {
   height: 9px;
   border-radius: 50%;
   background: var(--gc, var(--c-grey));
+}
+
+/* «Без контейнера»: пустой кружок на месте цветного — пункты стоят ровно. */
+.dot.none {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--faint);
 }
 
 .sep {
@@ -1482,8 +1580,20 @@ button {
   display: flex;
 }
 
+/* Включённая кнопка («уже в моей музыке») — залитый кружок акцентного цвета,
+   как пауза в пульте: просто цветной значок терялся на фоне плеера,
+   который сам подкрашен акцентом и обложкой. Кружок чуть меньше кнопки
+   (padding + content-box), чтобы не упирался в соседей. Без тени: строки
+   барабана наклонены 3D-трансформацией, filter на них рисуется с артефактами. */
 .pr-plugin.on {
-  color: var(--accent);
+  padding: 2px;
+  background: var(--accent) content-box;
+  color: var(--on-accent);
+}
+
+.pr-plugin.on:hover {
+  background: color-mix(in srgb, var(--accent) 82%, var(--fg)) content-box;
+  color: var(--on-accent);
 }
 
 /* ---------- пункт меню с галочкой (плагины) ---------- */
@@ -1495,6 +1605,175 @@ button {
   margin-right: 8px;
   display: inline-flex;
   color: var(--accent);
+}
+
+/* ---------- недавно закрытые ---------- */
+
+#closed {
+  flex: none;
+  margin: 0 4px 2px;
+  border-top: 1px solid var(--border);
+  padding-top: 2px;
+}
+
+#closed[hidden] {
+  display: none;
+}
+
+#closed-head {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px;
+  border-radius: var(--radius);
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+
+#closed-head:hover {
+  background: var(--hover);
+}
+
+#closed:not(.open) .chev {
+  transform: rotate(-90deg);
+}
+
+.closed-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#closed-head .count {
+  margin-left: 0;
+}
+
+#closed-clear {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--dim);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s, background-color 0.12s, color 0.12s;
+}
+
+#closed.open #closed-head:hover #closed-clear {
+  opacity: 1;
+}
+
+#closed-clear:hover {
+  background: color-mix(in srgb, var(--c-red) 15%, transparent);
+  color: var(--c-red);
+}
+
+#closed-clear[data-icon]::before {
+  width: 12px;
+  height: 12px;
+}
+
+#closed-list {
+  max-height: 38vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+#closed:not(.open) #closed-list {
+  display: none;
+}
+
+.ctab {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 3px 0 7px;
+  margin: 1px 0;
+  border-radius: var(--radius);
+  color: var(--dim);
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.ctab:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.ctab .fav {
+  opacity: 0.7;
+}
+
+.ctab .ago {
+  flex: none;
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctab:hover .ago {
+  display: none;
+}
+
+.ctab .close {
+  display: none;
+  opacity: 1;
+}
+
+.ctab:hover .close {
+  display: flex;
+}
+
+/* Закрытое окно: число вкладок в нём. */
+.wcount {
+  flex: none;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-align: center;
+  background: var(--press);
+}
+
+/* ---------- скорость воспроизведения ---------- */
+
+#deck-rate {
+  flex: none;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--dim);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+#deck-rate[hidden] {
+  display: none;
+}
+
+#deck-rate:hover {
+  background: var(--press);
+  color: var(--fg);
+}
+
+#deck-rate.changed {
+  color: var(--on-accent);
+  background: var(--accent);
+  box-shadow: none;
 }
 
 /* ---------- иконки Lucide (https://lucide.dev, ISC — icons/lucide/LICENSE) ----------
@@ -1530,6 +1809,10 @@ button {
 [data-icon="rotate-cw"] { --icon: url("../icons/lucide/rotate-cw.svg"); }
 [data-icon="moon"] { --icon: url("../icons/lucide/moon.svg"); }
 [data-icon="trash-2"] { --icon: url("../icons/lucide/trash-2.svg"); }
+[data-icon="settings"] { --icon: url("../icons/lucide/settings.svg"); }
+[data-icon="copy"] { --icon: url("../icons/lucide/copy.svg"); }
+[data-icon="chevron-left"] { --icon: url("../icons/lucide/chevron-left.svg"); }
+[data-icon="chevron-right"] { --icon: url("../icons/lucide/chevron-right.svg"); }
 
 .close[data-icon]::before {
   width: 13px;

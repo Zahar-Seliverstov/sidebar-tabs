@@ -36,6 +36,10 @@
     setTimeout(report, REPORT_MS);
   }
 
+  function optionsView() {
+    return browser.extension.getViews({ type: "tab" }).find((v) => v.location.pathname.endsWith("/options/options.html"));
+  }
+
   function panel() {
     return browser.extension.getViews({ type: "tab" }).find((v) => v.location.pathname.endsWith("/sidebar/sidebar.html"));
   }
@@ -135,6 +139,79 @@
         return setTabMic(cmd.tabId, cmd);
       case "tabVolume":
         return tabVolumes.has(cmd.tabId) ? tabVolumes.get(cmd.tabId) : 1;
+      // --- новые возможности 5.14: общие запросы к панели, фону и Firefox.
+      case "uiQuery": {
+        // Все элементы по селектору: видимость, классы, текст, подсказка.
+        const view = panel();
+        return [...view.document.querySelectorAll(cmd.selector)].map((el) => ({
+          shown: !el.hidden && view.getComputedStyle(el).display !== "none",
+          cls: el.className,
+          text: el.textContent,
+          title: el.title,
+          data: { ...el.dataset },
+        }));
+      }
+      case "uiCall": {
+        // Функция панели (верхнеуровневые function — свойства её window).
+        const value = await panel()[cmd.fn](...(cmd.args || []));
+        return value === undefined ? null : JSON.parse(JSON.stringify(value, (k, v) => (typeof v === "function" ? undefined : v)));
+      }
+      case "uiMenuClick": {
+        // Пункт открытого меню по тексту.
+        const item = [...panel().document.querySelectorAll("#menu .mi")].find((el) => el.querySelector(".mi-label").textContent === cmd.label);
+        if (!item) throw new Error("нет пункта меню " + cmd.label);
+        item.click();
+        return true;
+      }
+      case "setSettings":
+        await browser.storage.local.set({ settings: cmd.settings });
+        return true;
+      case "storage":
+        return (await browser.storage.local.get(cmd.key))[cmd.key] || null;
+      case "tabInfo": {
+        const t = await browser.tabs.get(cmd.tabId).catch(() => null);
+        if (!t) return null;
+        const group = t.groupId !== undefined && t.groupId !== -1 ? await browser.tabGroups.get(t.groupId) : null;
+        return { url: t.url, groupId: t.groupId, group: group && { title: group.title, color: group.color }, cookieStoreId: t.cookieStoreId, active: t.active };
+      }
+      case "openIn":
+        return (await browser.tabs.create({ url: cmd.url, cookieStoreId: cmd.cookieStoreId, active: true })).id;
+      case "createContainer":
+        return (await browser.contextualIdentities.create({ name: cmd.name, color: cmd.color || "orange", icon: "briefcase" })).cookieStoreId;
+      case "removeContainer":
+        await browser.contextualIdentities.remove(cmd.cookieStoreId);
+        return true;
+      case "commands":
+        return browser.commands.getAll();
+      case "command":
+        return runCommand(cmd.name, cmd.tab);
+      case "optionsOpen": {
+        await browser.runtime.openOptionsPage();
+        for (let i = 0; i < 100 && !(optionsView() && optionsView().document.querySelector(".shortcut")); i++) await new Promise((r) => setTimeout(r, 50));
+        if (!optionsView()) throw new Error("настройки не открылись");
+        return true;
+      }
+      case "optionsAddRule": {
+        const view = optionsView();
+        view.document.getElementById("rule-add").click();
+        const rule = view.document.querySelector(".rule:last-child");
+        for (const [sel, value] of [[".rule-pattern", cmd.pattern], [".rule-group", cmd.group]]) {
+          const input = rule.querySelector(sel);
+          input.value = value;
+          input.dispatchEvent(new view.Event("input", { bubbles: true }));
+        }
+        return true;
+      }
+      case "optionsRecord": {
+        // Назначить сочетание: клик по кнопке команды и нажатие клавиш.
+        const view = optionsView();
+        const row = view.document.querySelector(`.shortcut[data-name="${cmd.name}"]`);
+        row.querySelector('[data-act="record"]').click();
+        view.document.dispatchEvent(new view.KeyboardEvent("keydown", { code: cmd.code, key: cmd.key, ctrlKey: !!cmd.ctrl, altKey: !!cmd.alt, shiftKey: !!cmd.shift, bubbles: true, cancelable: true }));
+        return true;
+      }
+      case "optionsQuery":
+        return [...optionsView().document.querySelectorAll(cmd.selector)].map((el) => ({ text: el.textContent, hidden: el.hidden, cls: el.className }));
       default:
         throw new Error("unknown op " + cmd.op);
     }
