@@ -9,7 +9,7 @@
  * без окна, страницы с e2e/pages. Фон копии получает сцену (вкладки, группы,
  * плееры), открывает панель отдельным окном и снимает её captureVisibleTab.
  * Панель в отдельном окне показывала бы своё окно, поэтому в копии
- * sidebar.js windows.getCurrent() подменяется на окно со сценой.
+ * main.js windows.getCurrent() подменяется на окно со сценой.
  */
 
 const fs = require("node:fs");
@@ -147,9 +147,9 @@ function prepare(origin, dark) {
   // Наведение на первую группу: в README виден «+» (новая вкладка в группе),
   // который иначе появляется только под курсором.
   fs.appendFileSync(path.join(ext, "sidebar", "sidebar.css"), "\n#rows > .group:first-child { background: var(--hover); }\n#rows > .group:first-child .gadd { opacity: 1; }\n");
-  const sidebarJs = path.join(ext, "sidebar", "sidebar.js");
+  const sidebarJs = path.join(ext, "sidebar", "main.js");
   const src = fs.readFileSync(sidebarJs, "utf8");
-  if (!src.includes("browser.windows.getCurrent()")) throw new Error("в sidebar.js нет windows.getCurrent()");
+  if (!src.includes("browser.windows.getCurrent()")) throw new Error("в main.js нет windows.getCurrent()");
   fs.writeFileSync(sidebarJs, src.replace("browser.windows.getCurrent()", "Promise.resolve({ id: Number(location.hash.slice(1)) })"));
   fs.writeFileSync(path.join(profile, "extensions", EXT_ID), ext + "\n");
   fs.writeFileSync(

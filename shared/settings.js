@@ -20,6 +20,8 @@
 
   const GROUP_COLORS = ["grey", "blue", "purple", "cyan", "green", "yellow", "orange", "red", "pink"];
   const CLOSED_COUNTS = [5, 10, 15, 25];
+  // Через сколько минут без внимания вкладка выгружается сама.
+  const AUTO_DISCARD_MINUTES = [5, 10, 15, 30, 60, 120, 240];
   const MAX_RULES = 200;
   const MAX_TEXT = 200;
 
@@ -35,9 +37,41 @@
     containers: true,
     // Горячие клавиши в пунктах меню и подсказках.
     shortcutHints: true,
+    // Закрыли активную вкладку в группе — перейти на пустую вкладку вне
+    // групп (существующую или новую), а не на соседнюю в той же группе.
+    leaveGroupOnClose: true,
+    // Сама выгружать из памяти вкладки, которые давно не открывали.
+    autoDiscard: false,
+    autoDiscardMinutes: 30,
+    // Свои цвета панели и настроек: "#rrggbb" или "" — как в теме Firefox.
+    colors: Object.freeze({ bg: "", fg: "", accent: "" }),
     // Правила автогруппировки: [{ pattern, group, color }].
     groupRules: Object.freeze([]),
   });
+
+  const COLOR_KEYS = Object.keys(DEFAULTS.colors);
+
+  // Готовые темы. Первая — «как в Firefox»: свои цвета не заданы.
+  const COLOR_PRESETS = Object.freeze([
+    { id: "firefox", name: "Как в Firefox", colors: { bg: "", fg: "", accent: "" } },
+    { id: "graphite", name: "Графит", colors: { bg: "#1f2023", fg: "#e6e6e8", accent: "#7aa2f7" } },
+    { id: "midnight", name: "Полночь", colors: { bg: "#13141f", fg: "#dcdff2", accent: "#b48cff" } },
+    { id: "forest", name: "Лес", colors: { bg: "#171f1a", fg: "#dde8df", accent: "#5fc98a" } },
+    { id: "ember", name: "Угли", colors: { bg: "#1f1917", fg: "#efe4dd", accent: "#ff8a4c" } },
+    { id: "paper", name: "Бумага", colors: { bg: "#f8f5ee", fg: "#2b2722", accent: "#c2602b" } },
+    { id: "snow", name: "Снег", colors: { bg: "#ffffff", fg: "#1d1f24", accent: "#2f6fed" } },
+    { id: "sakura", name: "Сакура", colors: { bg: "#fdf6f8", fg: "#2e2328", accent: "#d6457a" } },
+  ]);
+
+  function hexColor(value) {
+    return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : "";
+  }
+
+  function presetOf(colors) {
+    const c = colors || {};
+    const found = COLOR_PRESETS.find((p) => COLOR_KEYS.every((k) => p.colors[k] === (c[k] || "")));
+    return found ? found.id : null;
+  }
 
   function text(value) {
     return typeof value === "string" ? value.trim().slice(0, MAX_TEXT) : "";
@@ -62,6 +96,12 @@
       duplicates: bool("duplicates"),
       containers: bool("containers"),
       shortcutHints: bool("shortcutHints"),
+      leaveGroupOnClose: bool("leaveGroupOnClose"),
+      autoDiscard: bool("autoDiscard"),
+      autoDiscardMinutes: AUTO_DISCARD_MINUTES.includes(s.autoDiscardMinutes)
+        ? s.autoDiscardMinutes
+        : DEFAULTS.autoDiscardMinutes,
+      colors: Object.fromEntries(COLOR_KEYS.map((k) => [k, hexColor(s.colors && s.colors[k])])),
       groupRules: Array.isArray(s.groupRules) ? s.groupRules.map(normalizeRule).filter(Boolean).slice(0, MAX_RULES) : [],
     };
   }
@@ -294,6 +334,11 @@
     SETTINGS_KEY,
     GROUP_COLORS,
     CLOSED_COUNTS,
+    AUTO_DISCARD_MINUTES,
+    COLOR_KEYS,
+    COLOR_PRESETS,
+    presetOf,
+    hexColor,
     DEFAULTS,
     normalizeSettings,
     normalizeRule,

@@ -14,8 +14,39 @@
         <h1>Sidebar Tabs</h1>
         <p class="sub">Настройки сохраняются сразу и действуют во всех окнах.</p>
       </div>
-      <span id="saved" class="saved" role="status" hidden>Сохранено</span>
     </header>
+    <span id="saved" class="saved" role="status">Сохранено</span>
+
+    <section class="card">
+      <h2>Оформление</h2>
+      <div id="presets" class="presets" role="radiogroup" aria-label="Готовые темы"></div>
+      <div class="colors">
+        <div class="row color-row">
+          <span class="row-text"><b>Фон</b></span>
+          <span class="color-tools">
+            <span class="color-value" data-value="bg"></span>
+            <input type="color" data-own-color="bg" aria-label="Цвет фона">
+            <button type="button" class="icon-btn" data-reset="bg" title="Как в теме Firefox">↺</button>
+          </span>
+        </div>
+        <div class="row color-row">
+          <span class="row-text"><b>Текст</b></span>
+          <span class="color-tools">
+            <span class="color-value" data-value="fg"></span>
+            <input type="color" data-own-color="fg" aria-label="Цвет текста">
+            <button type="button" class="icon-btn" data-reset="fg" title="Как в теме Firefox">↺</button>
+          </span>
+        </div>
+        <div class="row color-row">
+          <span class="row-text"><b>Акцент</b><small>Активная вкладка, кнопка воспроизведения, переключатели.</small></span>
+          <span class="color-tools">
+            <span class="color-value" data-value="accent"></span>
+            <input type="color" data-own-color="accent" aria-label="Цвет акцента">
+            <button type="button" class="icon-btn" data-reset="accent" title="Как в теме Firefox">↺</button>
+          </span>
+        </div>
+      </div>
+    </section>
 
     <section class="card">
       <h2>Панель</h2>
@@ -34,6 +65,34 @@
           <option value="10">10</option>
           <option value="15">15</option>
           <option value="25">25</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <span class="row-text">
+          <b>Закрыл вкладку в группе — выйти из группы</b>
+          <small>Вместо соседней вкладки той же группы откроется пустая вкладка вне групп (или уже открытая пустая).</small>
+        </span>
+        <input type="checkbox" class="switch" data-setting="leaveGroupOnClose">
+      </label>
+
+      <label class="row">
+        <span class="row-text">
+          <b>Выгружать неиспользуемые вкладки</b>
+          <small>Вкладка, которую давно не открывали, сама уходит из памяти и загрузится снова по клику. Активные, закреплённые, звучащие, вкладки из плеера и со звонком не трогаются.</small>
+        </span>
+        <input type="checkbox" class="switch" data-setting="autoDiscard">
+      </label>
+      <label class="row sub-row" data-depends="autoDiscard">
+        <span class="row-text"><b>Через сколько без внимания</b></span>
+        <select data-setting="autoDiscardMinutes" data-number>
+          <option value="5">5 минут</option>
+          <option value="10">10 минут</option>
+          <option value="15">15 минут</option>
+          <option value="30">30 минут</option>
+          <option value="60">1 час</option>
+          <option value="120">2 часа</option>
+          <option value="240">4 часа</option>
         </select>
       </label>
 
@@ -60,6 +119,12 @@
         </span>
         <input type="checkbox" class="switch" data-setting="shortcutHints">
       </label>
+    </section>
+
+    <section class="card">
+      <h2>Плагины</h2>
+      <p class="help">Кнопки сайтов в строке плеера — например, «+ в мою музыку» для ВКонтакте. Включаются и выключаются сразу, перезагружать страницы не нужно.</p>
+      <div id="plugins"></div>
     </section>
 
     <section class="card">

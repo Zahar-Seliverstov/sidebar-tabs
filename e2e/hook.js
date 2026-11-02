@@ -37,7 +37,8 @@
   }
 
   function optionsView() {
-    return browser.extension.getViews({ type: "tab" }).find((v) => v.location.pathname.endsWith("/options/options.html"));
+    // Последняя: после перезагрузки страницы старое окно какое-то время ещё в списке.
+    return browser.extension.getViews({ type: "tab" }).filter((v) => v.location.pathname.endsWith("/options/options.html")).pop();
   }
 
   function panel() {
@@ -158,7 +159,9 @@
       }
       case "uiMenuClick": {
         // Пункт открытого меню по тексту.
-        const item = [...panel().document.querySelectorAll("#menu .mi")].find((el) => el.querySelector(".mi-label").textContent === cmd.label);
+        const item = [...panel().document.querySelectorAll("#menu .mi, #menu .chip")].find(
+          (el) => (el.querySelector(".mi-label") || el).textContent === cmd.label
+        );
         if (!item) throw new Error("нет пункта меню " + cmd.label);
         item.click();
         return true;
@@ -174,6 +177,13 @@
         const group = t.groupId !== undefined && t.groupId !== -1 ? await browser.tabGroups.get(t.groupId) : null;
         return { url: t.url, groupId: t.groupId, group: group && { title: group.title, color: group.color }, cookieStoreId: t.cookieStoreId, active: t.active };
       }
+      case "activeTab": {
+        const [t] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+        return t ? { id: t.id, url: t.url, groupId: t.groupId } : null;
+      }
+      case "activate":
+        await browser.tabs.update(cmd.tabId, { active: true });
+        return true;
       case "openIn":
         return (await browser.tabs.create({ url: cmd.url, cookieStoreId: cmd.cookieStoreId, active: true })).id;
       case "createContainer":
@@ -209,6 +219,48 @@
         row.querySelector('[data-act="record"]').click();
         view.document.dispatchEvent(new view.KeyboardEvent("keydown", { code: cmd.code, key: cmd.key, ctrlKey: !!cmd.ctrl, altKey: !!cmd.alt, shiftKey: !!cmd.shift, bubbles: true, cancelable: true }));
         return true;
+      }
+      case "optionsSet": {
+        // Переключатель или список настроек, как это делает человек.
+        const view = optionsView();
+        const el = view.document.querySelector(`[data-setting="${cmd.key}"]`);
+        if (el.type === "checkbox") el.click();
+        else {
+          el.value = String(cmd.value);
+          el.dispatchEvent(new view.Event("change", { bubbles: true }));
+        }
+        return true;
+      }
+      case "optionsValues": {
+        const out = {};
+        for (const el of optionsView().document.querySelectorAll("[data-setting]")) out[el.dataset.setting] = el.type === "checkbox" ? el.checked : el.value;
+        return out;
+      }
+      case "optionsReload": {
+        optionsView().location.reload();
+        await new Promise((r) => setTimeout(r, 300));
+        for (let i = 0; i < 100 && !(optionsView() && optionsView().document.querySelector(".shortcut")); i++) await new Promise((r) => setTimeout(r, 50));
+        return true;
+      }
+      case "optionsPreset":
+        // Не cmd.id — это номер самой команды.
+        optionsView().document.querySelector(`[data-preset="${cmd.preset}"]`).click();
+        return true;
+      case "uiVar":
+        return panel().document.documentElement.style.getPropertyValue(cmd.name).trim();
+      case "optionsPlugin": {
+        const input = optionsView().document.querySelector(`[data-plugin="${cmd.plugin}"]`);
+        if (!input) throw new Error("нет плагина " + cmd.plugin);
+        input.click();
+        return input.checked;
+      }
+      case "mute":
+        await browser.tabs.update(cmd.tabId, { muted: !!cmd.muted });
+        return true;
+      case "autoDiscardPreview": {
+        // Что выгрузила бы автовыгрузка, если бы все вкладки не открывали 3 часа.
+        const tabs = await browser.tabs.query({});
+        return autoDiscardIds(tabs, Date.now() + 3 * 3600 * 1000, 30, playerTabIds());
       }
       case "optionsQuery":
         return [...optionsView().document.querySelectorAll(cmd.selector)].map((el) => ({ text: el.textContent, hidden: el.hidden, cls: el.className }));

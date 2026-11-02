@@ -63,16 +63,35 @@ function buildLayout(tabs, groupsById) {
 // Иконка для строки: своя, если вкладка её знает, иначе — запомненная
 // иконка сайта (кэш ведёт background.js). Так незагруженные (discarded)
 // вкладки показывают иконку, не загружаясь.
+// Разбор адреса — с запоминанием: адрес вкладки меняется редко, а
+// значок и дубликаты спрашивают его на каждой перерисовке.
+// { protocol, hostname, noHash } или null, если адрес не разобрать.
+const parsedUrls = new Map();
+const PARSED_URLS_MAX = 2000;
+
+function parseUrl(url) {
+  let p = parsedUrls.get(url);
+  if (p !== undefined) return p;
+  try {
+    const u = new URL(url);
+    const protocol = u.protocol;
+    const hostname = u.hostname;
+    u.hash = "";
+    p = { protocol, hostname, noHash: u.href };
+  } catch (e) {
+    p = null;
+  }
+  if (parsedUrls.size >= PARSED_URLS_MAX) parsedUrls.clear();
+  parsedUrls.set(url, p);
+  return p;
+}
+
 function iconFor(tab, cache) {
   if (tab.favIconUrl) return tab.favIconUrl;
   if (!cache || cache.size === 0 || !tab.url) return "";
-  try {
-    const u = new URL(tab.url);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
-    return cache.get(u.hostname) || "";
-  } catch (e) {
-    return "";
-  }
+  const u = parseUrl(tab.url);
+  if (!u || (u.protocol !== "http:" && u.protocol !== "https:")) return "";
+  return cache.get(u.hostname) || "";
 }
 
 // Решает, что означает бросок перетаскиваемых вкладок. Порядок в панели и
@@ -219,15 +238,9 @@ const DUP_SCHEMES = ["http:", "https:", "file:", "ftp:"];
 // (новая вкладка, about:) дубликатами не считаются.
 function dupKey(tab) {
   if (!tab || !tab.url) return null;
-  let u;
-  try {
-    u = new URL(tab.url);
-  } catch (e) {
-    return null;
-  }
-  if (!DUP_SCHEMES.includes(u.protocol)) return null;
-  u.hash = "";
-  return (tab.cookieStoreId || "") + " " + u.href;
+  const u = parseUrl(tab.url);
+  if (!u || !DUP_SCHEMES.includes(u.protocol)) return null;
+  return (tab.cookieStoreId || "") + " " + u.noHash;
 }
 
 // key → вкладки одной страницы (по порядку в окне), только где их больше одной.

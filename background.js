@@ -104,7 +104,9 @@ async function queryGroupsByFirefoxId(windowId) {
 // ключ (0,1,2...), уникальный в пределах окна, на который ссылаются вкладки —
 // его мы и используем при восстановлении, создавая группы заново.
 async function captureWindow(win) {
-  const groupMetaByFirefoxId = await queryGroupsByFirefoxId(win.id);
+  // Групп в окне нет (видно по самим вкладкам) — не спрашиваем о них Firefox.
+  const grouped = (win.tabs || []).some((tab) => tab.groupId !== undefined && tab.groupId !== -1);
+  const groupMetaByFirefoxId = grouped ? await queryGroupsByFirefoxId(win.id) : new Map();
   const groupKeyByFirefoxId = new Map();
   const groups = [];
 
@@ -161,8 +163,8 @@ async function captureSession() {
   // помечали снимок как "сохранённый" до await, а storage.local.set затем
   // упал бы (квота, ошибка диска), следующая попытка с тем же снимком тихо
   // считала бы себя уже сохранённой и пропускала запись — расхождение между
-  // памятью и диском осталось бы навсегда. Ретрай при сбое произойдёт при
-  // следующем реальном изменении вкладок/окон (нет отдельного таймера-подстраховки).
+  // памятью и диском осталось бы навсегда. При сбое runSave сам повторит
+  // запись через SAVE_RETRY_MS.
   lastSavedSerialized = serialized;
 }
 
@@ -223,6 +225,14 @@ browser.tabs.onMoved.addListener(scheduleSave);
 browser.tabs.onAttached.addListener(scheduleSave);
 browser.tabs.onDetached.addListener(scheduleSave);
 browser.tabs.onReplaced.addListener(scheduleSave);
+// Firefox заменил вкладку новой (tabs.onReplaced): запись по вкладке
+// переезжает на новый id.
+function moveTabEntry(map, fromId, toId) {
+  if (!map.has(fromId)) return;
+  map.set(toId, map.get(fromId));
+  map.delete(fromId);
+}
+
 // ---------------------------------------------------------------- кэш иконок
 //
 // Отложенные (discarded) вкладки не знают своей иконки, пока их не загрузишь,
@@ -328,7 +338,11 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   ) {
     scheduleSave();
   }
-});
+  // Активная вкладка вошла в группу или вышла из неё (см. «выход из группы»).
+  if (changeInfo.groupId !== undefined && tab && tab.active) noteActiveTab(tab);
+  // Фильтр: смена заголовка, звука, загрузки и т.п. сюда вообще не приходят —
+  // у «тикающих» сайтов заголовок меняется постоянно.
+}, { properties: ["favIconUrl", "status", "url", "pinned", "groupId"] });
 browser.windows.onCreated.addListener(scheduleSave);
 browser.windows.onRemoved.addListener(scheduleSave);
 
@@ -470,11 +484,7 @@ browser.tabs.onUpdated.addListener(
   { properties: ["status", "audible"] }
 );
 browser.tabs.onRemoved.addListener((tabId) => tabVolumes.delete(tabId));
-browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  if (!tabVolumes.has(removedTabId)) return;
-  tabVolumes.set(addedTabId, tabVolumes.get(removedTabId));
-  tabVolumes.delete(removedTabId);
-});
+browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => moveTabEntry(tabVolumes, removedTabId, addedTabId));
 
 // ---------------------------------------------------------------- микрофон
 //
@@ -509,11 +519,7 @@ async function setTabMic(tabId, change) {
 }
 
 browser.tabs.onRemoved.addListener((tabId) => micSettings.delete(tabId));
-browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  if (!micSettings.has(removedTabId)) return;
-  micSettings.set(addedTabId, micSettings.get(removedTabId));
-  micSettings.delete(removedTabId);
-});
+browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => moveTabEntry(micSettings, removedTabId, addedTabId));
 
 // ---------------------------------------------------------------- плагины
 //
@@ -800,6 +806,8 @@ function applyMediaState(tab, frameId, state) {
   }
   const prev = mediaSessions.get(key);
   const entry = { tabId: tab.id, frameId, windowId: tab.windowId, ...sanitizeMedia(state) };
+  // Подтверждение «жив» без обложки: "=" — та же, что была.
+  if (state.meta && state.meta.artwork === "=") entry.artwork = prev ? prev.artwork : "";
   // playedAt — когда фрейм последний раз играл. Трек, который ни разу не
   // играл (сайт лишь объявил его), не показываем.
   entry.playedAt = entry.playing ? Date.now() : prev ? prev.playedAt : 0;
@@ -1089,8 +1097,67 @@ const settingsReady = browser.storage.local
 function applySettings(raw) {
   const prevRules = JSON.stringify(settings.groupRules);
   settings = Settings.normalizeSettings(raw);
+  updateAutoDiscard();
   if (JSON.stringify(settings.groupRules) !== prevRules) return seedRuleMatches();
   return undefined;
+}
+
+// ---------------------------------------------------------------- автовыгрузка
+//
+// Если включено в настройках, раз в минуту выгружаем из памяти вкладки,
+// которые не открывали дольше заданного (tab.lastAccessed). Не трогаем:
+// активные, закреплённые, звучащие и с выключенным звуком (Firefox не
+// считает их звучащими, хотя там может играть музыка или видео), с
+// микрофоном/камерой/показом экрана, вкладки из плеера (даже на паузе —
+// иначе пропадёт строка с пультом), служебные about: и ещё не догрузившиеся.
+
+const AUTO_DISCARD_CHECK_MS = 60 * 1000;
+let autoDiscardTimer = null;
+
+function autoDiscardIds(tabs, now, minutes, keep) {
+  const before = now - minutes * 60 * 1000;
+  return tabs
+    .filter(
+      (t) =>
+        !t.active &&
+        !t.discarded &&
+        !t.pinned &&
+        !t.audible &&
+        !(t.mutedInfo && t.mutedInfo.muted) &&
+        t.status === "complete" &&
+        /^https?:/.test(t.url || "") &&
+        Number.isFinite(t.lastAccessed) &&
+        t.lastAccessed < before &&
+        !(t.sharingState && (t.sharingState.camera || t.sharingState.microphone || t.sharingState.screen)) &&
+        !(keep && keep.has(t.id))
+    )
+    .map((t) => t.id);
+}
+
+function playerTabIds() {
+  const ids = new Set(audibleTabs.keys());
+  for (const s of mediaSessions.values()) ids.add(s.tabId);
+  return ids;
+}
+
+async function runAutoDiscard() {
+  if (!settings.autoDiscard) return;
+  try {
+    const tabs = await browser.tabs.query({ discarded: false });
+    const ids = autoDiscardIds(tabs, Date.now(), settings.autoDiscardMinutes, playerTabIds());
+    if (ids.length) await browser.tabs.discard(ids);
+  } catch (err) {
+    console.error("[sidebar-tabs] auto-discard failed", err);
+  }
+}
+
+function updateAutoDiscard() {
+  if (settings.autoDiscard && !autoDiscardTimer) {
+    autoDiscardTimer = setInterval(runAutoDiscard, AUTO_DISCARD_CHECK_MS);
+  } else if (!settings.autoDiscard && autoDiscardTimer) {
+    clearInterval(autoDiscardTimer);
+    autoDiscardTimer = null;
+  }
 }
 
 if (browser.storage.onChanged) {
@@ -1238,6 +1305,87 @@ browser.tabs.onCreated.addListener((tab) => {
   }
 });
 browser.tabs.onRemoved.addListener((tabId) => ruleMatches.delete(tabId));
+
+// ---------------------------------------------------------------- выход из группы при закрытии
+//
+// Закрыли активную вкладку в группе — Firefox сам переключает на соседнюю,
+// обычно из той же группы. Вместо этого (настройка leaveGroupOnClose)
+// переходим на пустую новую вкладку вне групп, а если такой нет — открываем.
+//
+// Для этого помним активную вкладку каждого окна и в группе ли она. Порядок
+// onActivated/onRemoved при закрытии не гарантирован, поэтому помним и
+// предыдущую активную — но только если смена случилась из-за закрытия
+// (Firefox не передаёт previousTabId, когда прежней вкладки уже нет).
+// Иначе: перешёл из группы на другую вкладку и закрыл групповую — это не
+// закрытие активной, никуда перекидывать не надо.
+
+const LEAVE_GROUP_WINDOW_MS = 1500;
+// windowId → { tabId, grouped, at, prev }
+const activeTabs = new Map();
+
+function isGroupedTab(tab) {
+  return tab.groupId !== undefined && tab.groupId !== -1;
+}
+
+function noteActiveTab(tab, prevClosed = false) {
+  if (!tab || !tab.active || !Number.isInteger(tab.id)) return;
+  const old = activeTabs.get(tab.windowId);
+  if (old && old.tabId === tab.id) {
+    old.grouped = isGroupedTab(tab);
+    return;
+  }
+  const prev = prevClosed && old ? { tabId: old.tabId, grouped: old.grouped } : null;
+  activeTabs.set(tab.windowId, { tabId: tab.id, grouped: isGroupedTab(tab), at: Date.now(), prev });
+}
+
+function wasActiveGrouped(windowId, tabId) {
+  const rec = activeTabs.get(windowId);
+  if (!rec) return false;
+  if (rec.tabId === tabId) return rec.grouped;
+  return !!(rec.prev && rec.prev.tabId === tabId && rec.prev.grouped && Date.now() - rec.at < LEAVE_GROUP_WINDOW_MS);
+}
+
+function blankLooseTab(tabs) {
+  const blanks = tabs.filter((t) => !t.pinned && !isGroupedTab(t) && looksLikeFreshUrl(t.url) && !isTransientTab(t));
+  return blanks.length ? blanks[blanks.length - 1] : null;
+}
+
+async function leaveGroupAfterClose(windowId) {
+  const tabs = await browser.tabs.query({ windowId });
+  const blank = blankLooseTab(tabs);
+  if (blank) {
+    if (!blank.active) await browser.tabs.update(blank.id, { active: true });
+    return;
+  }
+  const tab = await browser.tabs.create({ windowId, active: true });
+  // Новая вкладка в конце окна могла прилипнуть к последней группе.
+  if (tab && isGroupedTab(tab) && typeof browser.tabs.ungroup === "function") await browser.tabs.ungroup([tab.id]);
+}
+
+if (browser.tabs.onActivated) {
+  browser.tabs.onActivated.addListener(({ tabId, windowId, previousTabId }) => {
+    noteActiveTab({ id: tabId, windowId, active: true, groupId: -1 }, previousTabId === undefined);
+    browser.tabs.get(tabId).then((t) => noteActiveTab(t), () => {});
+  });
+}
+
+browser.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  const windowId = removeInfo && removeInfo.windowId;
+  if (!removeInfo || removeInfo.isWindowClosing) {
+    activeTabs.delete(windowId);
+    return;
+  }
+  if (!settings.leaveGroupOnClose || isRestoring || !wasActiveGrouped(windowId, tabId)) return;
+  const rec = activeTabs.get(windowId);
+  if (rec.tabId === tabId) rec.grouped = false;
+  else rec.prev = null;
+  leaveGroupAfterClose(windowId).catch((err) => console.error("[sidebar-tabs] leave group failed", err));
+});
+
+browser.tabs
+  .query({ active: true })
+  .then((tabs) => (tabs || []).forEach(noteActiveTab))
+  .catch(() => {});
 
 // ---------------------------------------------------------------- горячие клавиши
 //
@@ -1598,10 +1746,23 @@ if (typeof module !== "undefined" && module.exports) {
     applyGroupRule,
     applyGroupRulesToOpenTabs,
     runCommand,
+    autoDiscardIds,
+    noteActiveTab,
+    wasActiveGrouped,
+    blankLooseTab,
+    leaveGroupAfterClose,
+    _getActiveTabs: () => activeTabs,
+    runAutoDiscard,
+    _getAutoDiscardTimer: () => autoDiscardTimer,
     _getSettings: () => settings,
     _getRuleMatches: () => ruleMatches,
     _resetState: () => {
       settings = Settings.normalizeSettings(null);
+      activeTabs.clear();
+      if (autoDiscardTimer) {
+        clearInterval(autoDiscardTimer);
+        autoDiscardTimer = null;
+      }
       ruleMatches.clear();
       ruleQueue = Promise.resolve();
       isRestoring = false;

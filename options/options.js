@@ -48,9 +48,9 @@ function report(err) {
 function save() {
   settings = S.normalizeSettings({ ...settings, groupRules: rules });
   return browser.storage.local.set({ [S.SETTINGS_KEY]: settings }).then(() => {
-    $saved.hidden = false;
+    $saved.classList.add("show");
     clearTimeout(savedTimer);
-    savedTimer = setTimeout(() => ($saved.hidden = true), 1500);
+    savedTimer = setTimeout(() => $saved.classList.remove("show"), 1400);
   }, report);
 }
 
@@ -79,6 +79,196 @@ document.addEventListener("change", (e) => {
   settings[key] = el.type === "checkbox" ? el.checked : el.dataset.number !== undefined ? Number(el.value) : el.value;
   renderToggles();
   save();
+});
+
+// ---------------------------------------------------------------- оформление
+//
+// Готовые темы и свои цвета (фон, текст, акцент). Пустой цвет — как в теме
+// Firefox. Страница сразу перекрашивается сама — это и есть предпросмотр.
+
+const $presets = document.getElementById("presets");
+const OWN_VARS = { bg: "--bg", fg: "--fg", accent: "--accent" };
+let colorProbe = null;
+
+// Любой CSS-цвет (в том числе системный) → "#rrggbb".
+function toHex(color) {
+  colorProbe ??= document.createElement("canvas").getContext("2d");
+  colorProbe.fillStyle = "#000";
+  colorProbe.fillStyle = color;
+  return colorProbe.fillStyle.startsWith("#") ? colorProbe.fillStyle : "#000000";
+}
+
+function isDarkHex(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+}
+
+// Цвет, который сейчас на экране для переменной: свой или из системы.
+function shownColor(prop) {
+  const probe = document.createElement("span");
+  probe.style.color = `var(${prop})`;
+  document.body.append(probe);
+  const value = getComputedStyle(probe).color;
+  probe.remove();
+  return toHex(value);
+}
+
+function lumHex(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function applyPageColors() {
+  const root = document.documentElement;
+  const style = root.style;
+  root.classList.add("theme-switching");
+  for (const [key, prop] of Object.entries(OWN_VARS)) {
+    if (settings.colors[key]) style.setProperty(prop, settings.colors[key]);
+    else style.removeProperty(prop);
+  }
+  // Системные цвета зависят от схемы: прежняя (от светлой темы) иначе
+  // осталась бы, и «Как в Firefox» показал бы светлые цвета в тёмной системе.
+  style.removeProperty("color-scheme");
+  if (settings.colors.bg) style.setProperty("color-scheme", isDarkHex(settings.colors.bg) ? "dark" : "light");
+  style.setProperty("--on-accent", lumHex(shownColor("--accent")) > 200 ? "#111" : "#fff");
+  requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switching")));
+}
+
+function renderPresets() {
+  const current = S.presetOf(settings.colors);
+  if (!$presets.children.length) {
+    for (const p of S.COLOR_PRESETS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "preset";
+      btn.setAttribute("role", "radio");
+      btn.dataset.preset = p.id;
+      const view = document.createElement("span");
+      view.className = "preset-view";
+      for (let i = 0; i < 4; i++) view.append(document.createElement("i"));
+      const name = document.createElement("span");
+      name.className = "preset-name";
+      name.textContent = p.name;
+      btn.append(view, name);
+      $presets.append(btn);
+    }
+  }
+  for (const btn of $presets.children) {
+    const p = S.COLOR_PRESETS.find((x) => x.id === btn.dataset.preset);
+    const view = btn.firstChild;
+    // «Как в Firefox» показывает системные цвета (без своих).
+    const sys = (k) => p.colors[k] || systemColors[k];
+    view.style.setProperty("--p-bg", sys("bg"));
+    view.style.setProperty("--p-fg", sys("fg"));
+    view.style.setProperty("--p-accent", sys("accent"));
+    btn.setAttribute("aria-checked", String(p.id === current));
+  }
+}
+
+function renderColors() {
+  applyPageColors();
+  for (const input of document.querySelectorAll("[data-own-color]")) {
+    const key = input.dataset.ownColor;
+    const own = settings.colors[key];
+    input.value = own || shownColor(OWN_VARS[key]);
+    const label = document.querySelector(`[data-value="${key}"]`);
+    label.textContent = own || "как в теме";
+    label.classList.toggle("theme", !own);
+    document.querySelector(`[data-reset="${key}"]`).disabled = !own;
+  }
+  renderPresets();
+}
+
+// Системные цвета без своих — для миниатюры «Как в Firefox».
+const systemColors = {};
+function readSystemColors() {
+  const style = document.documentElement.style;
+  const saved = Object.values(OWN_VARS).map((prop) => [prop, style.getPropertyValue(prop)]);
+  for (const [, prop] of saved) style.removeProperty(prop);
+  for (const [key, prop] of Object.entries(OWN_VARS)) systemColors[key] = shownColor(prop);
+  for (const [prop, value] of saved) if (value) style.setProperty(prop, value);
+}
+
+$presets.addEventListener("click", (e) => {
+  const btn = e.target.closest(".preset");
+  if (!btn) return;
+  const p = S.COLOR_PRESETS.find((x) => x.id === btn.dataset.preset);
+  settings.colors = { ...p.colors };
+  renderColors();
+  save();
+});
+
+document.addEventListener("input", (e) => {
+  const input = e.target.closest("[data-own-color]");
+  if (!input) return;
+  settings.colors = { ...settings.colors, [input.dataset.ownColor]: input.value };
+  renderColors();
+  saveSoon();
+});
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-reset]");
+  if (!btn) return;
+  settings.colors = { ...settings.colors, [btn.dataset.reset]: "" };
+  renderColors();
+  save();
+});
+
+// ---------------------------------------------------------------- плагины
+//
+// Список и включение — у фона (getPlugins / setPlugin); он же хранит,
+// какие включены (storage, ключ PLUGINS_KEY), и сам подключает плагин к
+// открытым вкладкам.
+
+const PLUGINS_KEY = "pluginsEnabled";
+const $plugins = document.getElementById("plugins");
+
+async function renderPlugins() {
+  const list = await browser.runtime.sendMessage({ type: "getPlugins" });
+  $plugins.textContent = "";
+  if (!Array.isArray(list) || list.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "Плагинов нет.";
+    $plugins.append(empty);
+    return;
+  }
+  for (const p of list) {
+    const row = document.createElement("label");
+    row.className = "row";
+    const text = document.createElement("span");
+    text.className = "row-text";
+    const name = document.createElement("b");
+    name.textContent = p.name;
+    text.append(name);
+    if (p.description) {
+      const desc = document.createElement("small");
+      desc.textContent = p.description;
+      text.append(desc);
+    }
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "switch";
+    input.dataset.plugin = p.id;
+    input.checked = !!p.enabled;
+    row.append(text, input);
+    $plugins.append(row);
+  }
+}
+
+$plugins.addEventListener("change", async (e) => {
+  const input = e.target.closest("[data-plugin]");
+  if (!input) return;
+  try {
+    const ok = await browser.runtime.sendMessage({ type: "setPlugin", id: input.dataset.plugin, enabled: input.checked });
+    if (!ok) throw new Error("плагин не найден");
+    $saved.classList.add("show");
+    clearTimeout(savedTimer);
+    savedTimer = setTimeout(() => $saved.classList.remove("show"), 1400);
+  } catch (err) {
+    report(err);
+  }
+  await renderPlugins();
 });
 
 // ---------------------------------------------------------------- правила
@@ -362,9 +552,11 @@ async function checkContainers() {
     os = info.os;
     settings = S.normalizeSettings(stored[S.SETTINGS_KEY]);
     rules = settings.groupRules.map((r) => ({ ...r }));
+    readSystemColors();
+    renderColors();
     renderToggles();
     renderRules();
-    await Promise.all([renderShortcuts(), checkContainers()]);
+    await Promise.all([renderShortcuts(), checkContainers(), renderPlugins()]);
   } catch (err) {
     report(err);
   }
@@ -374,9 +566,11 @@ async function checkContainers() {
 // вторая вкладка настроек) — переключатели показывают правду. Правила в
 // редакторе не трогаем, пока их здесь же правят.
 browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes[PLUGINS_KEY]) renderPlugins().catch(report);
   if (area !== "local" || !changes[S.SETTINGS_KEY]) return;
   const next = S.normalizeSettings(changes[S.SETTINGS_KEY].newValue);
   settings = { ...next, groupRules: settings.groupRules };
   renderToggles();
+  renderColors();
 });
 if (browser.commands && browser.commands.onChanged) browser.commands.onChanged.addListener(() => renderShortcuts().catch(report));

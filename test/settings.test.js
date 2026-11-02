@@ -182,3 +182,31 @@ test("shortcutFromEvent: один модификатор — ждём, без Ct
   assert.ok(S.shortcutFromEvent(key("KeyM", { shiftKey: true }), "linux").error);
   assert.ok(S.shortcutFromEvent(key("Backquote", { ctrlKey: true }), "linux").error);
 });
+
+test("normalizeSettings: автовыгрузка выключена по умолчанию, минуты из списка", () => {
+  const d = S.normalizeSettings(null);
+  assert.equal(d.autoDiscard, false);
+  assert.equal(d.autoDiscardMinutes, 30);
+  const s = S.normalizeSettings({ autoDiscard: true, autoDiscardMinutes: 60 });
+  assert.equal(s.autoDiscard, true);
+  assert.equal(s.autoDiscardMinutes, 60);
+  assert.equal(S.normalizeSettings({ autoDiscardMinutes: 7 }).autoDiscardMinutes, 30);
+  assert.equal(S.normalizeSettings({ autoDiscard: "yes" }).autoDiscard, false);
+});
+
+test("normalizeSettings: свои цвета — только #rrggbb, иначе пусто (цвет темы)", () => {
+  assert.deepEqual(S.normalizeSettings(null).colors, { bg: "", fg: "", accent: "" });
+  const s = S.normalizeSettings({ colors: { bg: "#1F2023", fg: "red", accent: "#12345", extra: "#ffffff" } });
+  assert.deepEqual(s.colors, { bg: "#1f2023", fg: "", accent: "" });
+  assert.deepEqual(S.normalizeSettings({ colors: "x" }).colors, { bg: "", fg: "", accent: "" });
+});
+
+test("presetOf: узнаёт готовую тему по цветам, свои цвета — null", () => {
+  assert.equal(S.presetOf({ bg: "", fg: "", accent: "" }), "firefox");
+  assert.equal(S.presetOf(undefined), "firefox");
+  const g = S.COLOR_PRESETS.find((p) => p.id === "graphite");
+  assert.equal(S.presetOf({ ...g.colors }), "graphite");
+  assert.equal(S.presetOf({ ...g.colors, accent: "#000000" }), null);
+  for (const p of S.COLOR_PRESETS) assert.deepEqual(S.normalizeSettings({ colors: p.colors }).colors, p.colors);
+});
+

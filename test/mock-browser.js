@@ -56,6 +56,7 @@ function createMockBrowser({ initialStorage = {}, withTabGroups = false } = {}) 
       onDetached: createEvent(),
       onReplaced: createEvent(),
       onUpdated: createEvent(),
+      onActivated: createEvent(),
       create: async (props) => {
         calls.tabsCreate.push(props);
         if (browser.__tabsCreateImpl) return browser.__tabsCreateImpl(props);

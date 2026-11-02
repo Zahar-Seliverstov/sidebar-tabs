@@ -247,6 +247,25 @@ scenario("выгрузка вкладки: строка исчезает", async
   await cmd("close", { tabId: tab });
 });
 
+scenario("автовыгрузка: не трогает вкладки, где играет звук или видео, вкладки плеера на паузе и без звука", async () => {
+  const playing = await openPage("player", "mode=dom&meta=1&ad=1");
+  await waitFor("первая играет", (s) => rowOf(s, playing)?.playing);
+  const muted = await openPage("player", "mode=dom&meta=1&ad=2");
+  await waitFor("вторая играет", (s) => rowOf(s, muted)?.playing);
+  await cmd("mute", { tabId: muted, muted: true });
+  const paused = await openPage("player", "mode=dom&meta=1&ad=3");
+  await waitFor("третья играет", (s) => rowOf(s, paused)?.playing);
+  await cmd("page", { tabId: paused, fn: "pause" });
+  await waitFor("третья на паузе", (s) => rowOf(s, paused) && !rowOf(s, paused).playing);
+  const plain = await openPage("blank", "ad=4");
+  const last = await cmd("open", { url: page("blank", "ad=5") });
+  await sleep(500);
+  const ids = await cmd("autoDiscardPreview", {});
+  check(ids.includes(plain), "обычную давнюю вкладку не выгрузили бы", ids);
+  for (const [name, id] of [["играющая", playing], ["без звука", muted], ["на паузе", paused]]) check(!ids.includes(id), `выгрузили бы ${name}`, ids);
+  for (const tabId of [playing, muted, paused, plain, last]) await cmd("close", { tabId });
+});
+
 scenario("служебный: Firefox видит звук вкладки (tab.audible)", async () => {
   const tab = await openPage("player", "mode=dom&meta=1");
   await waitFor("вкладка звучит", (s) => s.tabs.find((t) => t.id === tab)?.audible);
@@ -694,6 +713,31 @@ scenario("автогруппировка: новые вкладки подход
   await cmd("setSettings", { settings: {} });
 });
 
+scenario("закрыли активную вкладку в группе: переход на пустую вкладку вне групп, а не на соседку из группы", async () => {
+  await cmd("setSettings", { settings: { groupRules: [{ pattern: "127.0.0.1/blank.html", group: "E2E выход", color: "blue" }] } });
+  // Панель в e2e — вкладка в том же окне: в конце возвращаем её на передний
+  // план, иначе фоновая вкладка не рисуется и следующие сценарии её не видят.
+  const before = await cmd("activeTab", {});
+  const a = await cmd("open", { url: page("blank", "leave=1") });
+  const info = await waitCmd("первая в группе", "tabInfo", { tabId: a }, (t) => t && t.group && t.group.title === "E2E выход");
+  const b = await cmd("open", { url: page("blank", "leave=2") });
+  await waitCmd("вторая в той же группе и активна", "tabInfo", { tabId: b }, (t) => t && t.groupId === info.groupId && t.active);
+  await cmd("close", { tabId: b });
+  const now = await waitCmd(
+    "активна пустая вкладка вне групп",
+    "activeTab",
+    {},
+    (t) => t && t.id !== a && t.groupId === -1 && /^about:(newtab|blank|home)$/.test(t.url)
+  );
+  await sleep(400);
+  const still = await cmd("activeTab", {});
+  check(still && still.id === now.id, "активная вкладка сменилась обратно", still);
+  if (before) await cmd("activate", { tabId: before.id });
+  await cmd("close", { tabId: a });
+  if (!before || now.id !== before.id) await cmd("close", { tabId: now.id });
+  await cmd("setSettings", { settings: {} });
+});
+
 scenario("скорость: значок в пульте, колесо и меню меняют скорость страницы, следующий трек её сохраняет", async () => {
   await ensurePanel();
   const tab = await openPage("player", "mode=detached&meta=1&handlers=1&newPerTrack=1");
@@ -778,6 +822,56 @@ scenario("настройки: правило сохраняется, сочет�
   await cmd("optionsRecord", { name: "media-prev", code: "KeyN", key: "т", ctrl: true, alt: true });
   await waitCmd("занятое сочетание — ошибка, а не замена", "optionsQuery", { selector: '.shortcut[data-name="media-prev"] .shortcut-error' }, (r) => r[0] && !r[0].hidden && r[0].text.includes("Уже назначено"));
   await cmd("setSettings", { settings: {} });
+});
+
+scenario("настройки: каждый переключатель и список сохраняются и переживают перезагрузку страницы", async () => {
+  await cmd("setSettings", { settings: {} });
+  await cmd("optionsOpen");
+  const start = await cmd("optionsValues");
+  const want = {};
+  for (const [key, value] of Object.entries(start)) {
+    if (typeof value === "boolean") {
+      await cmd("optionsSet", { key });
+      want[key] = !value;
+    } else {
+      const next = key === "closedCount" ? "25" : key === "autoDiscardMinutes" ? "60" : value;
+      await cmd("optionsSet", { key, value: next });
+      want[key] = next;
+    }
+    await sleep(150);
+  }
+  const stored = await waitCmd("всё в storage", "storage", { key: "settings" }, (s) =>
+    s && Object.entries(want).every(([k, v]) => String(s[k]) === String(v))
+  ).catch(async (e) => { throw new Error(e.message + "\nхотели " + JSON.stringify(want) + "\nв storage " + JSON.stringify(await cmd("storage", { key: "settings" }))); });
+  await cmd("optionsReload");
+  const after = await cmd("optionsValues");
+  check(Object.entries(want).every(([k, v]) => String(after[k]) === String(v)), "после перезагрузки страница показывает другое", { want, after, stored });
+  await cmd("setSettings", { settings: {} });
+});
+
+scenario("оформление: готовая тема из настроек сразу перекрашивает панель, «Как в Firefox» возвращает цвета темы", async () => {
+  await ensurePanel();
+  await cmd("setSettings", { settings: {} });
+  await cmd("optionsOpen");
+  // С правилом автогруппировки на странице (у его кружков тоже есть цвета).
+  await cmd("optionsAddRule", { pattern: "example.net", group: "Тема" });
+  await cmd("optionsPreset", { preset: "midnight" });
+  await waitCmd("в storage цвета «Полночи»", "storage", { key: "settings" }, (s) => s && s.colors && s.colors.bg === "#13141f" && s.colors.accent === "#b48cff");
+  await waitCmd("панель с фоном «Полночи»", "uiVar", { name: "--bg" }, (v) => v === "#13141f");
+  await waitCmd("и акцентом", "uiVar", { name: "--accent" }, (v) => v === "#b48cff");
+  await cmd("optionsPreset", { preset: "firefox" });
+  await waitCmd("свой фон снят", "uiVar", { name: "--bg" }, (v) => v !== "#13141f");
+  await cmd("setSettings", { settings: {} });
+});
+
+scenario("настройки: плагин выключается и снова включается переключателем в блоке «Плагины»", async () => {
+  await cmd("optionsOpen");
+  await waitCmd("плагин в списке", "optionsQuery", { selector: `[data-plugin="e2e-like"]` }, (r) => r.length === 1);
+  await cmd("optionsPlugin", { plugin: "e2e-like" });
+  await waitCmd("выключен", "storage", { key: "pluginsEnabled" }, (s) => s && s["e2e-like"] === false);
+  await waitCmd("переключатель обновился", "optionsQuery", { selector: `[data-plugin="e2e-like"]` }, (r) => r.length === 1);
+  await cmd("optionsPlugin", { plugin: "e2e-like" });
+  await waitCmd("снова включён", "storage", { key: "pluginsEnabled" }, (s) => s && s["e2e-like"] === true);
 });
 
 // Пустой аудиовыход на время тестов. Возвращает функцию удаления или null.

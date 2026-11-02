@@ -96,17 +96,20 @@ button {
   container-type: inline-size;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 5px 0 8px;
+  gap: 4px;
+  /* 31 = 30 внутри + 1 линия снизу: кнопке 24px остаётся ровно по 3px
+     сверху и снизу (при нечётном остатке пиксель уходил на одну сторону). */
+  height: 31px;
+  padding: 0 4px 0 11px;
   border-bottom: 1px solid var(--border);
 }
 
-/* Сводка в две строчки: сколько вкладок и сколько из них в памяти. */
+/* Сводка в две строчки слева: сколько вкладок и сколько из них в памяти.
+   Сжимается раньше кнопок: в узкой панели текст обрезается, а не вылезает. */
 #tb-info {
-  /* Сжимается раньше кнопок: при узкой панели текст обрезается, а не вылезает. */
   flex: 0 1 auto;
   min-width: 0;
+  margin-right: auto;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -138,111 +141,70 @@ button {
   }
 }
 
-/* Кнопки — значок со счётчиком в обводке, прижаты вправо. */
-.tb-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 4px;
-}
-
+/* Быстрые действия — значок с числом на полупрозрачной подложке, без рамок. */
 .tb-btn {
   flex: none;
-  min-width: 26px;
-  height: 26px;
+  height: 24px;
+  min-width: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 0 6px;
+  gap: 5px;
+  padding: 0 8px 0 7px;
   border-radius: 7px;
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--border);
-  color: var(--fg);
+  background: var(--hover);
+  color: var(--dim);
   font-size: 11px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 0.15s, color 0.15s, box-shadow 0.15s, transform 0.1s var(--ease);
+  transition: background-color 0.12s, color 0.12s, transform 0.1s var(--ease);
+}
+
+.tb-btn[data-icon]::before {
+  width: 14px;
+  height: 14px;
 }
 
 .tb-btn:hover {
-  background: var(--raised);
+  background: var(--press);
+  color: var(--fg);
 }
 
 .tb-btn:active:not(:disabled) {
-  transform: scale(0.96);
+  transform: scale(0.95);
 }
 
 .tb-btn:disabled {
   opacity: 0.4;
   cursor: default;
-  background: transparent;
-}
-
-.tb-btn[data-icon]::before {
-  width: 15px;
-  height: 15px;
+  background: var(--hover);
   color: var(--dim);
-  transition: color 0.15s;
-}
-
-.tb-btn:not(:disabled):hover[data-icon]::before {
-  color: var(--accent);
-}
-
-.tb-btn.danger:not(:disabled):hover {
-  color: var(--c-red);
-  background: color-mix(in srgb, var(--c-red) 12%, var(--surface));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-red) 35%, transparent);
-}
-
-.tb-btn.danger:not(:disabled):hover[data-icon]::before {
-  color: var(--c-red);
-}
-
-/* Сколько вкладок затронет кнопка. */
-.tb-count {
-  min-width: 16px;
-  padding: 1px 5px;
-  border-radius: 999px;
-  background: var(--press);
-  color: var(--dim);
-  font-size: 10.5px;
-  font-weight: 600;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.tb-count:empty {
-  display: none;
 }
 
 .tb-btn[hidden] {
   display: none;
 }
 
+.tb-count:empty {
+  display: none;
+}
+
+.tb-btn.danger:not(:disabled):hover {
+  color: var(--c-red);
+  background: color-mix(in srgb, var(--c-red) 14%, transparent);
+}
+
+/* Первое нажатие «закрыть вне групп»: подложка краснеет и ждёт второго. */
 .tb-btn.confirm,
 .tb-btn.confirm:hover {
-  color: #fff;
-  background: var(--c-red);
-  box-shadow: 0 1px 6px color-mix(in srgb, var(--c-red) 45%, transparent);
-  animation: pulse-confirm 1s var(--ease) infinite alternate;
+  color: var(--c-red);
+  background: color-mix(in srgb, var(--c-red) 22%, transparent);
 }
 
-.tb-btn.confirm[data-icon]::before,
-.tb-btn.confirm:hover[data-icon]::before {
-  color: #fff;
-}
-
-.tb-btn.confirm .tb-count {
-  background: rgb(255 255 255 / 0.25);
-  color: #fff;
-}
-
-@keyframes pulse-confirm {
-  to {
-    box-shadow: 0 1px 12px color-mix(in srgb, var(--c-red) 70%, transparent);
-  }
+#tb-settings {
+  padding: 0;
 }
 
 /* ---------- закреплённые вкладки: плитки ---------- */
@@ -251,7 +213,7 @@ button {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
   gap: 3px;
-  padding: 5px 5px 4px;
+  padding: 4px;
   flex: none;
 }
 
@@ -316,7 +278,7 @@ button {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 3px 0 7px;
+  padding: 0 2px 0 7px;
   margin: 1px 4px;
   border-radius: var(--radius);
   position: relative;
@@ -362,7 +324,7 @@ button {
   width: 16px;
   height: 16px;
   flex: none;
-  transition: opacity 0.15s, filter 0.15s;
+  transition: opacity 0.15s;
 }
 
 .title {
@@ -394,14 +356,19 @@ button {
 .dup {
   display: none;
   flex: none;
-  width: 18px;
-  height: 18px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0 3.5px;
   align-items: center;
-  justify-content: center;
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--c-orange);
   cursor: pointer;
   transition: background-color 0.12s;
+}
+
+.tab:hover .dup {
+  padding: 0 7px;
+  background: color-mix(in srgb, var(--c-orange) 14%, transparent);
 }
 
 .tab.has-dup .dup {
@@ -409,7 +376,7 @@ button {
 }
 
 .dup:hover {
-  background: var(--press);
+  background: color-mix(in srgb, var(--c-orange) 24%, transparent) !important;
 }
 
 .dup[data-icon]::before {
@@ -447,6 +414,15 @@ button {
   border-radius: 999px;
   color: var(--dim);
   transition: background-color 0.18s, color 0.12s, box-shadow 0.18s;
+}
+
+/* Значки справа (дубликат, микрофон, звук, крестик) стоят плотной группой:
+   общий промежуток строки (7px) между ними сокращаем до 3px. */
+.tab.has-dup .dup + .mic,
+.tab.has-dup .dup + .mic + .audio,
+.mic.shown + .audio,
+.mic[data-open] + .audio {
+  margin-left: -4px;
 }
 
 .audio:not(.shown):not([data-open]),
@@ -528,8 +504,10 @@ button {
   display: none;
 }
 
+/* Отступ справа нужен только раскрытому значку (у него подложка);
+   в покое проценты стоят вплотную к соседям. */
 .vexp .vpct {
-  padding-right: 5px;
+  padding-right: 1px;
 }
 
 .vexp[data-open] .vpct {
@@ -542,6 +520,7 @@ button {
   opacity: 0.6;
 }
 
+/* Крестик (у недавно закрытых — значок 18px). */
 .close {
   flex: none;
   width: 18px;
@@ -549,20 +528,81 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: 5px;
   color: var(--dim);
-  opacity: 0;
-  transition: opacity 0.12s, background-color 0.12s;
-}
-
-.tab:hover .close,
-.tab.active .close {
-  opacity: 1;
+  transition: background-color 0.12s, color 0.12s;
 }
 
 .close:hover {
-  background: var(--press);
-  color: var(--fg);
+  background: color-mix(in srgb, var(--c-red) 16%, transparent);
+  color: var(--c-red);
+}
+
+/* Кнопки действий в строке вкладки и в заголовке группы: в покое —
+   значок (или ничего), при наведении на строку выезжает плашка со словом. */
+/* Без анимации ширины: она пересчитывала раскладку строки каждый кадр.
+   Плашка появляется сразу, плавно — только прозрачность (дёшево). */
+.lbl {
+  display: none;
+  margin-left: 4px;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  pointer-events: none;
+  /* Кириллица в этом шрифте сидит в строке ниже середины — подпись была
+     на пиксель ниже центра плашки (замер по снимку). */
+  position: relative;
+  top: -1px;
+}
+
+.tab .close,
+.gadd {
+  width: auto;
+  height: 20px;
+  padding: 0;
+  justify-content: flex-start;
+  display: none;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+/* Активная вкладка: крестик-значок виден всегда. */
+.tab.active .close {
+  display: flex;
+  width: 20px;
+  justify-content: center;
+  margin-left: -4px;
+}
+
+/* Плашки: поровну 7px по бокам, от краёв строки — столько же, сколько
+   сверху и снизу (2px). */
+.tab:hover .close,
+.group:hover .gadd {
+  display: flex;
+  width: auto;
+  padding: 0 7px;
+  background: var(--hover);
+  animation: fade-in 0.12s ease-out;
+}
+
+.tab:hover .close {
+  margin-left: -4px;
+}
+
+.tab:hover .lbl,
+.group:hover .lbl {
+  display: inline;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.tab .close:hover {
+  background: color-mix(in srgb, var(--c-red) 16%, transparent);
+  color: var(--c-red);
 }
 
 /* ---------- заголовок группы ---------- */
@@ -572,7 +612,7 @@ button {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 6px 0 4px;
+  padding: 0 2px 0 4px;
   margin: 4px 4px 1px;
   border-radius: var(--radius);
   transition: background-color 0.12s;
@@ -640,19 +680,13 @@ button {
   background: var(--hover);
 }
 
-/* Плюсик «новая вкладка в группе» — как крестик у вкладки: виден при наведении. */
+/* «＋ Вкладка» — новая вкладка в группе: выезжает справа при наведении
+   на заголовок и сдвигает число вкладок влево (стили — у кнопок строки). */
 .gadd {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  margin-right: -3px;
-  display: flex;
+  margin-left: 0;
   align-items: center;
-  justify-content: center;
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--dim);
-  opacity: 0;
-  transition: opacity 0.12s, background-color 0.12s, color 0.12s;
 }
 
 .gadd[data-icon]::before {
@@ -661,11 +695,12 @@ button {
 }
 
 .group:hover .gadd {
-  opacity: 1;
+  margin-left: 4px;
+  height: 18px;
 }
 
 .gadd:hover {
-  background: var(--press);
+  background: var(--press) !important;
   color: var(--fg);
 }
 
@@ -777,7 +812,9 @@ button {
 #menu {
   min-width: 180px;
   max-width: calc(100vw - 8px);
-  padding: 4px;
+  padding: 5px;
+  /* Без обводки: меню отделяет только мягкая тень. */
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28), 0 2px 8px rgb(0 0 0 / 0.14);
 }
 
 #menu[hidden] {
@@ -787,17 +824,17 @@ button {
 .mi {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 25px;
-  padding: 0 10px;
-  border-radius: 6px;
+  gap: 9px;
+  height: 27px;
+  padding: 0 9px;
+  border-radius: 7px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .mi:hover {
-  background: var(--selected);
+  background: var(--press);
 }
 
 .mi-label {
@@ -856,8 +893,8 @@ button {
 
 .sep {
   height: 1px;
-  margin: 5px 6px;
-  background: var(--border);
+  margin: 4px 9px;
+  background: color-mix(in srgb, var(--menu-fg) 7%, transparent);
 }
 
 .swatches {
@@ -944,13 +981,14 @@ button {
   isolation: isolate;
   overflow: hidden;
   flex: none;
-  margin: 2px 4px 4px;
-  padding: 3px;
-  border-radius: 12px;
+  /* Пристыкован к низу панели: во всю ширину, скруглён только сверху. */
+  margin: 2px 0 0;
+  padding: 3px 7px 4px;
+  border-radius: 14px 14px 0 0;
   background:
     radial-gradient(120% 160% at 0% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 65%),
     var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: 0 -1px 0 color-mix(in srgb, var(--fg) 7%, transparent);
   animation: pop-in 0.16s var(--ease);
 }
 
@@ -1006,6 +1044,9 @@ button {
   top: 50%;
   margin-top: calc(var(--pr-h) / -2);
   backface-visibility: hidden;
+}
+
+#player.wheel.spinning .pr {
   will-change: transform, opacity;
 }
 
@@ -1315,18 +1356,32 @@ button {
   background: var(--dim);
 }
 
+/* Ручка едет сдвигом (transform) — на композиторе, без пересчёта
+   раскладки пульта дважды в секунду: «рельс» во всю ширину полосы
+   сдвигается на долю, ручка — точка на его левом краю. */
 #deck-thumb {
   position: absolute;
   top: 50%;
-  left: calc(var(--p) * 100%);
+  left: 0;
+  right: 0;
+  height: 0;
+  pointer-events: none;
+  transform: translateX(calc(var(--p) * 100%));
+  transition: transform 0.5s linear;
+}
+
+#deck-thumb::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: -6px;
   width: 12px;
   height: 12px;
-  margin: -6px 0 0 -6px;
   border-radius: 50%;
   background: var(--fg);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
   transform: scale(0);
-  transition: transform 0.15s var(--ease), left 0.5s linear;
+  transition: transform 0.15s var(--ease);
 }
 
 #deck.seekable #deck-bar {
@@ -1341,9 +1396,9 @@ button {
   margin-top: -3px;
 }
 
-#deck.seekable #deck-bar:hover #deck-thumb,
-#deck.seekable #deck-bar:focus-visible #deck-thumb,
-#deck.dragging #deck-thumb {
+#deck.seekable #deck-bar:hover #deck-thumb::before,
+#deck.seekable #deck-bar:focus-visible #deck-thumb::before,
+#deck.dragging #deck-thumb::before {
   transform: scale(1);
 }
 
@@ -1463,29 +1518,39 @@ button {
   height: 15px;
 }
 
-/* ±10 с: круговая стрелка, внутри цифра. */
+/* ±10 с: плашки с текстом на полупрозрачной подложке, как кнопки панели. */
 .dk-skip {
-  color: var(--dim);
-}
-
-.dk-skip[data-icon]::before {
-  width: 20px;
-  height: 20px;
-}
-
-.dk-skip span {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding-top: 1px;
-  font-size: 7.5px;
-  font-weight: 700;
+  width: auto;
+  min-width: 38px;
+  height: 24px;
+  margin: 0 2px;
+  padding: 0 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--fg) 11%, transparent);
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+  font-size: 11.5px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
-.dk-skip:hover:not(.off) {
+/* «« 10» и «10 »»: стрелки снаружи, число ближе к центру пульта. */
+.dk-skip {
+  gap: 2px;
+  padding: 0 8px 0 6px;
+}
+
+.dk-skip[data-act="forward"] {
+  flex-direction: row-reverse;
+  padding: 0 6px 0 8px;
+}
+
+.dk-skip[data-icon]::before {
+  width: 14px;
+  height: 14px;
+}
+
+.dk-btn.dk-skip:hover:not(.off) {
+  background: color-mix(in srgb, var(--fg) 18%, transparent);
   color: var(--fg);
 }
 
@@ -1596,7 +1661,73 @@ button {
   color: var(--on-accent);
 }
 
-/* ---------- пункт меню с галочкой (плагины) ---------- */
+/* ---------- сводка, подписи разделов и переключатели в меню ---------- */
+
+.mi-head {
+  padding: 5px 9px 3px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/* Число вкладок группы в покое — с тем же отступом от края, что раньше;
+   при наведении справа от него встаёт «＋ Вкладка». */
+.group .count {
+  margin-right: 4px;
+}
+
+.group:hover .count {
+  margin-right: 0;
+}
+
+/* Смена темы — разом, без поэлементных переходов цвета вразнобой. */
+.theme-switching,
+.theme-switching * {
+  transition: none !important;
+}
+
+/* Список плашек (скорость в плеере). */
+#menu.compact {
+  min-width: 0;
+  padding: 4px 5px 5px;
+}
+
+/* Скорость — столбиком: узкий список плашек. */
+.chips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chip {
+  height: 23px;
+  min-width: 64px;
+  padding: 0 10px;
+  text-align: left;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--menu-fg);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.chip:hover {
+  background: var(--press);
+}
+
+.chip.on {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+
+
+/* ---------- пункт меню с галочкой ---------- */
 
 .mi .check {
   flex: none;
@@ -1732,6 +1863,7 @@ button {
 
 .ctab:hover .close {
   display: flex;
+  width: 18px;
 }
 
 /* Закрытое окно: число вкладок в нём. */
@@ -1749,13 +1881,13 @@ button {
 
 #deck-rate {
   flex: none;
-  height: 15px;
-  padding: 0 5px;
-  border-radius: 999px;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 5px;
   font-size: 10px;
   font-weight: 600;
   color: var(--dim);
-  box-shadow: inset 0 0 0 1px var(--border);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: background-color 0.12s, color 0.12s;
@@ -1795,6 +1927,12 @@ button {
 [data-icon="volume-1"] { --icon: url("../icons/lucide/volume-1.svg"); }
 [data-icon="volume-2"] { --icon: url("../icons/lucide/volume-2.svg"); }
 [data-icon="volume-x"] { --icon: url("../icons/lucide/volume-x.svg"); }
+[data-icon="tb-copy"] { --icon: url("../icons/lucide/thin/copy.svg"); }
+[data-icon="tb-moon"] { --icon: url("../icons/lucide/thin/moon.svg"); }
+[data-icon="tb-x"] { --icon: url("../icons/lucide/thin/x.svg"); }
+[data-icon="chevrons-left"] { --icon: url("../icons/lucide/chevrons-left.svg"); }
+[data-icon="chevrons-right"] { --icon: url("../icons/lucide/chevrons-right.svg"); }
+[data-icon="tb-settings"] { --icon: url("../icons/lucide/thin/settings.svg"); }
 [data-icon="puzzle"] { --icon: url("../icons/lucide/puzzle.svg"); }
 [data-icon="check"] { --icon: url("../icons/lucide/check.svg"); }
 [data-icon="mic"] { --icon: url("../icons/lucide/mic.svg"); }

@@ -8,13 +8,10 @@
 <body>
   <div id="toolbar">
     <span id="tb-info"><b id="tb-total"></b><span id="tb-loaded"></span></span>
-    <div class="tb-actions">
-      <button id="tb-settings" class="tb-btn" type="button" data-icon="settings" title="Настройки"></button>
-      <button id="tb-plugins" class="tb-btn" type="button" data-icon="puzzle" title="Плагины"></button>
-      <button id="tb-dups" class="tb-btn" type="button" data-icon="copy" hidden><span class="tb-count"></span></button>
-      <button id="tb-discard" class="tb-btn" type="button" data-icon="moon"><span class="tb-count"></span></button>
-      <button id="tb-close-loose" class="tb-btn danger" type="button" data-icon="trash-2"><span class="tb-count"></span></button>
-    </div>
+    <button id="tb-dups" class="tb-btn" type="button" data-icon="tb-copy" hidden><span class="tb-count"></span></button>
+    <button id="tb-discard" class="tb-btn" type="button" data-icon="tb-moon"><span class="tb-count"></span></button>
+    <button id="tb-close-loose" class="tb-btn danger" type="button" data-icon="tb-x"><span class="tb-count"></span></button>
+    <button id="tb-settings" class="tb-btn" type="button" data-icon="tb-settings" title="Настройки: оформление, плагины, автогруппировка, горячие клавиши"></button>
   </div>
   <div id="pinned" hidden></div>
   <div id="scroll">
@@ -55,20 +52,26 @@
         <button id="deck-reload" type="button" data-act="reload" hidden>Перезагрузить</button>
       </div>
       <div id="deck-ctl">
-        <button class="dk-btn dk-skip" type="button" data-act="back" data-icon="rotate-ccw" title="Назад на 10 секунд"><span>10</span></button>
+        <button class="dk-btn dk-skip" type="button" data-act="back" data-icon="chevrons-left" title="Назад на 10 секунд"><span>10</span></button>
         <button class="dk-btn" type="button" data-act="previoustrack" data-icon="skip-back-fill" title="Предыдущий трек"></button>
         <button class="dk-btn dk-play" type="button" data-act="toggle" data-icon="play-fill"></button>
         <button class="dk-btn" type="button" data-act="nexttrack" data-icon="skip-forward-fill" title="Следующий трек"></button>
-        <button class="dk-btn dk-skip" type="button" data-act="forward" data-icon="rotate-cw" title="Вперёд на 10 секунд"><span>10</span></button>
+        <button class="dk-btn dk-skip" type="button" data-act="forward" data-icon="chevrons-right" title="Вперёд на 10 секунд"><span>10</span></button>
       </div>
     </div>
   </section>
 
   <div id="menu" role="menu" hidden></div>
   <div id="drag-image" aria-hidden="true"></div>
-  <script src="vendor/motion.js"></script>
+  <script src="spring.js"></script>
   <script src="../shared/settings.js"></script>
   <script src="model.js"></script>
   <script src="sidebar.js"></script>
+  <script src="list.js"></script>
+  <script src="volume.js"></script>
+  <script src="player.js"></script>
+  <script src="toolbar.js"></script>
+  <script src="input.js"></script>
+  <script src="main.js"></script>
 </body>
 </html>

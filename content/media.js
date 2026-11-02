@@ -334,9 +334,17 @@
   }
 
   // Пока фрейму есть что показать — раз в HEARTBEAT_MS подтверждаем, что живы.
+  // Обложку (бывает data: до 64 КБ) в подтверждении не гоняем: "=" — та же,
+  // что в прошлый раз (если она изменилась, состояние уже ушло через schedule).
+  function heartbeat() {
+    const state = snapshot();
+    if (state && state.meta && state.meta.artwork) state.meta = { ...state.meta, artwork: "=" };
+    send(state);
+  }
+
   function updateHeartbeat() {
     if (M.shown && !M.heartbeat) {
-      M.heartbeat = setInterval(() => send(snapshot()), HEARTBEAT_MS);
+      M.heartbeat = setInterval(heartbeat, HEARTBEAT_MS);
     } else if (!M.shown && M.heartbeat) {
       clearInterval(M.heartbeat);
       M.heartbeat = 0;

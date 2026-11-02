@@ -378,3 +378,154 @@ test("скорость: что прислала страница, проверя
   bg.onMediaMessage({ state: { meta: { title: "T" }, playing: true, canRate: true } }, { tab: { id: 7, windowId: 1 }, frameId: 0 });
   assert.equal(await bg.mediaControl({ tabId: 7, frameId: 0, action: "rate", rate: 100 }), false);
 });
+
+// ---------------------------------------------------------------- автовыгрузка
+
+test("autoDiscardIds: выгружаются только давно не открытые обычные вкладки", () => {
+  const { browser } = groupingWorld([]);
+  const bg = loadBackground(browser);
+  const now = 10 * 60 * 60 * 1000;
+  const old = now - 31 * 60 * 1000;
+  const base = { active: false, discarded: false, pinned: false, audible: false, status: "complete", url: "https://a.ru/", lastAccessed: old };
+  const tabs = [
+    { id: 1, ...base },
+    { id: 2, ...base, lastAccessed: now - 5 * 60 * 1000 },
+    { id: 3, ...base, active: true },
+    { id: 4, ...base, pinned: true },
+    { id: 5, ...base, audible: true },
+    { id: 6, ...base, discarded: true },
+    { id: 7, ...base, url: "about:newtab" },
+    { id: 8, ...base, status: "loading" },
+    { id: 9, ...base, sharingState: { microphone: true } },
+    { id: 10, ...base },
+    { id: 11, ...base, lastAccessed: undefined },
+    { id: 12, ...base, mutedInfo: { muted: true } },
+    { id: 13, ...base, mutedInfo: { muted: false } },
+  ];
+  assert.deepEqual(bg.autoDiscardIds(tabs, now, 30, new Set([10])), [1, 13]);
+  assert.deepEqual(bg.autoDiscardIds(tabs, now, 60, new Set()), []);
+  bg._resetState();
+});
+
+test("автовыгрузка: таймер включается и выключается вместе с настройкой", () => {
+  const { browser } = groupingWorld([]);
+  const bg = loadBackground(browser);
+  assert.equal(bg._getAutoDiscardTimer(), null);
+  bg.applySettings({ autoDiscard: true });
+  assert.notEqual(bg._getAutoDiscardTimer(), null);
+  bg.applySettings({ autoDiscard: false });
+  assert.equal(bg._getAutoDiscardTimer(), null);
+  bg._resetState();
+});
+
+test("runAutoDiscard: выгружает подходящие вкладки, вкладку из плеера не трогает", async () => {
+  const now = Date.now();
+  const old = now - 2 * 60 * 60 * 1000;
+  const { browser } = groupingWorld([
+    { id: 1, active: false, discarded: false, audible: false, status: "complete", url: "https://a.ru/", lastAccessed: old },
+    { id: 2, active: false, discarded: false, audible: false, status: "complete", url: "https://music.ru/", lastAccessed: old },
+  ]);
+  const discarded = [];
+  browser.tabs.discard = async (ids) => discarded.push(...ids);
+  const bg = loadBackground(browser);
+  await bg.settingsReady;
+  bg.applySettings({ autoDiscard: true, autoDiscardMinutes: 30 });
+  bg._getMediaSessions().set("2:0", { tabId: 2, frameId: 0 });
+  await bg.runAutoDiscard();
+  assert.deepEqual(discarded, [1]);
+  bg._resetState();
+});
+
+// ---------------------------------------------------------------- выход из группы при закрытии
+
+function closeWorld(tabs) {
+  const w = groupingWorld(tabs);
+  w.browser.__tabsQueryImpl = async (q = {}) =>
+    [...w.world.tabs.values()].filter((t) => q.windowId === undefined || t.windowId === q.windowId).map((t) => ({ ...t }));
+  w.browser.__tabsUpdateImpl = async (id, props) => {
+    if (props.active) for (const t of w.world.tabs.values()) t.active = t.id === id;
+    return { id, ...props };
+  };
+  w.browser.__tabsCreateImpl = async (props) => {
+    const t = { id: 500, windowId: props.windowId, active: true, groupId: -1, url: "about:newtab", status: "complete" };
+    w.world.tabs.set(t.id, t);
+    return { ...t };
+  };
+  return w;
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+test("закрыли активную вкладку в группе — переход на пустую вкладку вне групп", async () => {
+  const { browser } = closeWorld([
+    { id: 1, active: true, groupId: 7, url: "https://a.ru/", status: "complete" },
+    { id: 2, groupId: 7, url: "https://b.ru/", status: "complete" },
+    { id: 3, url: "about:newtab", status: "complete" },
+  ]);
+  const bg = loadBackground(browser);
+  await bg.settingsReady;
+  bg.noteActiveTab({ id: 1, windowId: 1, active: true, groupId: 7 });
+  // Firefox сначала переключил на соседку из группы (без previousTabId —
+  // прежней уже нет), потом сообщил о закрытии.
+  await browser.tabs.onActivated.emit({ tabId: 2, windowId: 1 });
+  await browser.tabs.onRemoved.emit(1, { windowId: 1, isWindowClosing: false });
+  await flush();
+  assert.deepEqual(browser.__calls.tabsUpdate.at(-1), [3, { active: true }]);
+  assert.equal(browser.__calls.tabsCreate.length, 0);
+  bg._resetState();
+});
+
+test("закрыли активную вкладку в группе, пустой вне групп нет — открывается новая", async () => {
+  const { browser } = closeWorld([
+    { id: 1, active: true, groupId: 7, url: "https://a.ru/", status: "complete" },
+    { id: 2, groupId: 7, url: "about:newtab", status: "complete" },
+    { id: 3, url: "https://c.ru/", status: "complete" },
+  ]);
+  const bg = loadBackground(browser);
+  await bg.settingsReady;
+  bg.noteActiveTab({ id: 1, windowId: 1, active: true, groupId: 7 });
+  await browser.tabs.onRemoved.emit(1, { windowId: 1, isWindowClosing: false });
+  await flush();
+  assert.equal(browser.__calls.tabsCreate.length, 1);
+  assert.deepEqual(browser.__calls.tabsCreate[0], { windowId: 1, active: true });
+  bg._resetState();
+});
+
+test("закрытие вкладки вне группы, неактивной или с выключенной настройкой — ничего не делаем", async () => {
+  const { browser } = closeWorld([
+    { id: 1, active: true, url: "https://a.ru/", status: "complete" },
+    { id: 2, groupId: 7, url: "https://b.ru/", status: "complete" },
+  ]);
+  const bg = loadBackground(browser);
+  await bg.settingsReady;
+  bg.noteActiveTab({ id: 1, windowId: 1, active: true, groupId: -1 });
+  await browser.tabs.onRemoved.emit(1, { windowId: 1, isWindowClosing: false });
+  await browser.tabs.onRemoved.emit(2, { windowId: 1, isWindowClosing: false });
+  bg.noteActiveTab({ id: 2, windowId: 1, active: true, groupId: 7 });
+  bg.applySettings({ leaveGroupOnClose: false });
+  await browser.tabs.onRemoved.emit(2, { windowId: 1, isWindowClosing: false });
+  bg.applySettings({});
+  bg.noteActiveTab({ id: 2, windowId: 1, active: true, groupId: 7 });
+  await browser.tabs.onRemoved.emit(2, { windowId: 1, isWindowClosing: true });
+  await flush();
+  assert.equal(browser.__calls.tabsCreate.length, 0);
+  assert.equal(browser.__calls.tabsUpdate.length, 0);
+  bg._resetState();
+});
+
+test("перешёл из группы на другую вкладку и закрыл групповую — никуда не перекидываем", async () => {
+  const { browser } = closeWorld([
+    { id: 1, groupId: 7, url: "https://a.ru/", status: "complete" },
+    { id: 2, active: true, url: "https://c.ru/", status: "complete" },
+    { id: 3, url: "about:newtab", status: "complete" },
+  ]);
+  const bg = loadBackground(browser);
+  await bg.settingsReady;
+  bg.noteActiveTab({ id: 1, windowId: 1, active: true, groupId: 7 });
+  await browser.tabs.onActivated.emit({ tabId: 2, windowId: 1, previousTabId: 1 });
+  await browser.tabs.onRemoved.emit(1, { windowId: 1, isWindowClosing: false });
+  await flush();
+  assert.equal(browser.__calls.tabsUpdate.length, 0);
+  assert.equal(browser.__calls.tabsCreate.length, 0);
+  bg._resetState();
+});
