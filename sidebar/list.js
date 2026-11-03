@@ -341,7 +341,6 @@ function makeTab(key) {
   close.className = "close";
   close.title = "Закрыть вкладку";
   close.dataset.icon = "x";
-  close.append(actionLabel("Закрыть"));
 
   el.append(makeIcon(), title, dup, mic, audio, close);
   return el;
@@ -420,17 +419,19 @@ function makeGroup(key) {
   add.className = "gadd";
   add.title = "Новая вкладка в группе";
   add.dataset.icon = "plus";
-  add.append(actionLabel("Вкладка"));
 
   el.append(chev, title, count, add);
+  // Ссылки, а не children[i]: поле переименования встаёт перед названием.
+  el._title = title;
+  el._count = count;
   return el;
 }
 
 function updateGroup(el, row) {
   const g = row.group;
   if (setIfChanged(el, "cls", g.collapsed ? "group collapsed" : "group")) el.className = el._v.cls;
-  if (setIfChanged(el, "title", g.title || "")) el.children[1].textContent = el._v.title;
-  if (setIfChanged(el, "count", String(row.count))) el.children[2].textContent = el._v.count;
+  if (setIfChanged(el, "title", g.title || "")) el._title.textContent = el._v.title;
+  if (setIfChanged(el, "count", String(row.count))) el._count.textContent = el._v.count;
   if (setIfChanged(el, "color", groupColor(g))) setColorVar(el, el._v.color);
   if (setIfChanged(el, "tip", g.collapsed ? "Развернуть группу" : "Свернуть группу")) el.title = el._v.tip;
 }
@@ -458,9 +459,15 @@ function tabsOfGroup(gid) {
   return [...state.tabs.values()].filter((t) => t.groupId === gid).sort((a, b) => a.index - b.index);
 }
 
+// Выделение меняет только классы строк — перерисовываем лишь те, что
+// вошли в него или вышли.
 function setSelection(ids) {
-  state.selected = new Set(ids);
-  scheduleRender();
+  const next = new Set(ids);
+  const changed = [];
+  for (const id of state.selected) if (!next.has(id)) changed.push(id);
+  for (const id of next) if (!state.selected.has(id)) changed.push(id);
+  state.selected = next;
+  if (changed.length) scheduleRender(changed);
 }
 
 // Цели действия: если кликнули по выделенной вкладке — всё выделение,
@@ -519,7 +526,7 @@ function setMic(ids, change) {
     if (next.volume >= 1 && !next.muted) state.mic.delete(id);
     else state.mic.set(id, next);
   }
-  scheduleRender();
+  scheduleRender(ids);
   for (const id of ids) {
     browser.runtime.sendMessage({ type: "setMic", tabId: id, ...change }).then((applied) => {
       const had = state.micBlocked.has(id);
@@ -572,7 +579,7 @@ function startRename(gid) {
   const group = state.groups.get(gid);
   if (!el || el.querySelector(".rename")) return;
 
-  const titleEl = el.children[1];
+  const titleEl = el._title;
   const input = document.createElement("input");
   input.className = "rename";
   input.value = group ? group.title || "" : "";

@@ -695,3 +695,13 @@ input[type="url"]:focus {
     transition: none !important;
   }
 }
+
+/* Пальчик над всем, что нажимается. */
+button:not(:disabled),
+select:not(:disabled),
+summary,
+input[type="checkbox"]:not(:disabled),
+input[type="color"]:not(:disabled),
+input[type="range"]:not(:disabled) {
+  cursor: pointer;
+}

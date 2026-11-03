@@ -96,14 +96,29 @@
     return null;
   }
 
+  // Найденная кнопка запоминается: пока она в документе и трек тот же,
+  // состояние читается с неё одним атрибутом, без обхода страницы
+  // (ВК шевелит DOM постоянно, и плеер спрашивает состояние часто).
+  let cached = null;
+
+  function current() {
+    const title = playingTitle();
+    if (cached && cached.title === title && cached.el.isConnected) {
+      return { el: cached.el, added: added(cached.el) };
+    }
+    const b = find();
+    cached = b ? { el: b.el, title } : null;
+    return b;
+  }
+
   SidebarTabs.plugin("vk-favorite", (plugin) => {
     plugin.button("add", {
       state() {
-        const b = find();
+        const b = current();
         return b ? { active: b.added } : null;
       },
       press() {
-        const b = find();
+        const b = current();
         if (b) b.el.click();
       },
     });
@@ -121,7 +136,9 @@
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["aria-label", "title", "class", "data-testactive"],
+      // Без class: ВК меняет классы постоянно, а состояние кнопки видно
+      // по data-testactive и подписи.
+      attributeFilter: ["aria-label", "title", "data-testactive"],
     });
   });
 })();

@@ -164,17 +164,26 @@ function openVolume(box, sticky = false) {
   volOpen = box;
   volSticky = sticky;
   box.dataset.open = "";
-  scheduleRender();
+  renderVolumeBox(box);
 }
 
 function closeVolume() {
   clearTimeout(volTimer);
   volTimer = 0;
   if (!volOpen) return;
-  delete volOpen.dataset.open;
+  const box = volOpen;
+  delete box.dataset.open;
   volOpen = null;
   volSticky = false;
-  scheduleRender();
+  renderVolumeBox(box);
+}
+
+// Раскрытие меняет только сам регулятор (проценты) — перерисовываем его
+// строку, а не весь список.
+function renderVolumeBox(box) {
+  const id = volumeTargetOf(box);
+  if (id === null) scheduleRender();
+  else scheduleRender([id]);
 }
 
 function scheduleVolumeClose() {
@@ -214,6 +223,9 @@ document.addEventListener(
   true
 );
 document.addEventListener("pointerup", () => (sliderHeld = false), true);
+document.addEventListener("pointercancel", () => (sliderHeld = false), true);
+// Кнопку отпустили за пределами панели — pointerup мог не дойти.
+window.addEventListener("blur", () => (sliderHeld = false));
 
 document.addEventListener("mouseover", (e) => {
   const node = elementOf(e.target);

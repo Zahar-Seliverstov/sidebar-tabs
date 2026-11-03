@@ -80,6 +80,19 @@ button {
   margin: 0;
 }
 
+/* Пальчик над всем, что нажимается. Отдельные кнопки могут вернуть
+   свой курсор (например, недоступные — обычную стрелку). */
+button:not(:disabled),
+.close,
+.gadd,
+.chev,
+.vexp,
+.mi,
+.chip,
+.swatch {
+  cursor: pointer;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
@@ -538,10 +551,7 @@ button {
   color: var(--c-red);
 }
 
-/* Кнопки действий в строке вкладки и в заголовке группы: в покое —
-   значок (или ничего), при наведении на строку выезжает плашка со словом. */
-/* Без анимации ширины: она пересчитывала раскладку строки каждый кадр.
-   Плашка появляется сразу, плавно — только прозрачность (дёшево). */
+/* Подпись значка дубликатов: видна при наведении на строку. */
 .lbl {
   display: none;
   margin-left: 4px;
@@ -556,41 +566,35 @@ button {
   top: -1px;
 }
 
+/* Крестик вкладки и «+» группы — квадратные значки без подписи:
+   у активной вкладки крестик виден всегда, у прочих — при наведении. */
 .tab .close,
 .gadd {
-  width: auto;
+  width: 20px;
   height: 20px;
   padding: 0;
-  justify-content: flex-start;
+  justify-content: center;
   display: none;
   transition: background-color 0.12s, color 0.12s;
 }
 
-/* Активная вкладка: крестик-значок виден всегда. */
-.tab.active .close {
-  display: flex;
-  width: 20px;
-  justify-content: center;
+.tab .close {
   margin-left: -4px;
 }
 
-/* Плашки: поровну 7px по бокам, от краёв строки — столько же, сколько
-   сверху и снизу (2px). */
+.tab.active .close,
 .tab:hover .close,
 .group:hover .gadd {
   display: flex;
-  width: auto;
-  padding: 0 7px;
+}
+
+.tab:hover .close,
+.group:hover .gadd {
   background: var(--hover);
   animation: fade-in 0.12s ease-out;
 }
 
-.tab:hover .close {
-  margin-left: -4px;
-}
-
-.tab:hover .lbl,
-.group:hover .lbl {
+.tab:hover .lbl {
   display: inline;
 }
 
@@ -680,8 +684,8 @@ button {
   background: var(--hover);
 }
 
-/* «＋ Вкладка» — новая вкладка в группе: выезжает справа при наведении
-   на заголовок и сдвигает число вкладок влево (стили — у кнопок строки). */
+/* «+» — новая вкладка в группе: появляется при наведении на заголовок
+   (размеры — у кнопок строки). */
 .gadd {
   margin-left: 0;
   align-items: center;
@@ -696,7 +700,6 @@ button {
 
 .group:hover .gadd {
   margin-left: 4px;
-  height: 18px;
 }
 
 .gadd:hover {
@@ -805,11 +808,7 @@ button {
   background: var(--menu-bg);
   color: var(--menu-fg);
   border-radius: 10px;
-  box-shadow: var(--pop-shadow);
   animation: pop-in 0.12s var(--ease);
-}
-
-#menu {
   min-width: 180px;
   max-width: calc(100vw - 8px);
   padding: 5px;
@@ -981,14 +980,14 @@ button {
   isolation: isolate;
   overflow: hidden;
   flex: none;
-  /* Пристыкован к низу панели: во всю ширину, скруглён только сверху. */
-  margin: 2px 0 0;
-  padding: 3px 7px 4px;
-  border-radius: 14px 14px 0 0;
+  /* Карточка с небольшими отступами от краёв панели, скруглена целиком. */
+  margin: 2px 3px 3px;
+  padding: 3px 4px;
+  border-radius: 12px;
   background:
     radial-gradient(120% 160% at 0% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 65%),
     var(--surface);
-  box-shadow: 0 -1px 0 color-mix(in srgb, var(--fg) 7%, transparent);
+  box-shadow: var(--shadow);
   animation: pop-in 0.16s var(--ease);
 }
 

@@ -407,6 +407,12 @@ function volumeScript(volume) {
       if (S.els.size > 300) S.els.delete(S.els.values().next().value);
       apply(el);
     };
+    // Эти подмены встают поверх подмен content/media.js — передаём ему
+    // плееры сами, иначе он перестал бы видеть новые плееры вне документа.
+    const mediaTrack = (el, onRead) => {
+      const M = window.__mtbMedia;
+      try { if (M && M.track && (!onRead || M.late)) M.track(el); } catch (e) {}
+    };
     if (!S.installed) {
       S.installed = true;
       const pproto = window.wrappedJSObject.HTMLMediaElement.prototype;
@@ -429,11 +435,11 @@ function volumeScript(volume) {
       Object.defineProperty(pproto, "currentTime", {
         configurable: true,
         enumerable: true,
-        get: exportFunction(function () { track(this); return ct.get.call(this); }, window),
+        get: exportFunction(function () { track(this); mediaTrack(this, true); return ct.get.call(this); }, window),
         set: exportFunction(function (v) { ct.set.call(this, v); }, window),
       });
       const play = xproto.play;
-      pproto.play = exportFunction(function () { track(this); return play.call(this); }, window);
+      pproto.play = exportFunction(function () { track(this); mediaTrack(this, false); return play.call(this); }, window);
       document.addEventListener("play", (e) => {
         if (e.target instanceof HTMLMediaElement) track(e.target);
       }, true);
@@ -602,14 +608,21 @@ function pluginScripts(p) {
 
 // intoOpenTabs — включили из панели: подключаем и в уже открытые вкладки.
 async function enablePlugin(p, intoOpenTabs) {
-  if (p.enabled) return;
-  p.enabled = true;
-  p.handle = await browser.contentScripts.register({
-    matches: p.matches,
-    js: pluginScripts(p).map((file) => ({ file })),
-    runAt: "document_idle",
-    allFrames: p.allFrames,
-  });
+  if (p.enabled || p.enabling) return;
+  // Включённым считается только после успешной регистрации: иначе при
+  // ошибке плагин числился бы включённым, но не работал до перезапуска.
+  p.enabling = true;
+  try {
+    p.handle = await browser.contentScripts.register({
+      matches: p.matches,
+      js: pluginScripts(p).map((file) => ({ file })),
+      runAt: "document_idle",
+      allFrames: p.allFrames,
+    });
+    p.enabled = true;
+  } finally {
+    p.enabling = false;
+  }
   if (intoOpenTabs) await injectPluginIntoOpenTabs(p);
 }
 
@@ -920,27 +933,50 @@ function scheduleMediaBroadcast() {
   }, MEDIA_BROADCAST_MS);
 }
 
-// Уборка: замолчавшие фреймы и стихшие вкладки. Таймер живёт, только пока
-// есть что убирать, — без звука фон не просыпается.
+// Уборка: замолчавшие фреймы и стихшие вкладки. Таймер ставится на
+// ближайший срок (фрейм перестал подтверждать, что жив; стихшая вкладка
+// дождалась конца паузы), а не тикает по кругу: живой плеер на паузе
+// подтверждает себя сам, и фон из-за него не просыпается.
+// Возвращает, через сколько мс нужна следующая уборка (0 — не нужна).
 function sweepMedia(now = Date.now()) {
   let changed = false;
+  let next = Infinity;
   for (const [key, s] of mediaSessions) {
-    if (now - s.seenAt > MEDIA_DEAD_MS) changed = mediaSessions.delete(key) || changed;
-    else if (now - s.seenAt > MEDIA_STALE_MS) checkSession(s);
+    const age = now - s.seenAt;
+    if (age > MEDIA_DEAD_MS) {
+      changed = mediaSessions.delete(key) || changed;
+      continue;
+    }
+    if (age > MEDIA_STALE_MS) {
+      checkSession(s);
+      next = Math.min(next, MEDIA_SWEEP_MS);
+    } else {
+      next = Math.min(next, MEDIA_STALE_MS - age + 1);
+    }
   }
   for (const [tabId, a] of audibleTabs) {
-    if (!a.audible && now - a.quietSince >= AUDIBLE_GRACE_MS) changed = audibleTabs.delete(tabId) || changed;
+    if (a.audible) continue;
+    const left = AUDIBLE_GRACE_MS - (now - a.quietSince);
+    if (left <= 0) changed = audibleTabs.delete(tabId) || changed;
+    else next = Math.min(next, left + 1);
   }
   if (changed) scheduleMediaBroadcast();
-  return mediaSessions.size > 0 || audibleTabs.size > 0;
+  return next === Infinity ? 0 : next;
 }
 
-function scheduleMediaSweep() {
-  if (mediaSweepTimer) return;
-  mediaSweepTimer = setTimeout(function tick() {
+let mediaSweepAt = 0;
+
+function scheduleMediaSweep(delay = MEDIA_STALE_MS + 1) {
+  const at = Date.now() + delay;
+  // Уже стоит на более ранний срок — он и пересчитает.
+  if (mediaSweepTimer && mediaSweepAt <= at) return;
+  clearTimeout(mediaSweepTimer);
+  mediaSweepAt = at;
+  mediaSweepTimer = setTimeout(() => {
     mediaSweepTimer = null;
-    if (sweepMedia()) mediaSweepTimer = setTimeout(tick, MEDIA_SWEEP_MS);
-  }, MEDIA_SWEEP_MS);
+    const nextDelay = sweepMedia();
+    if (nextDelay) scheduleMediaSweep(nextDelay);
+  }, delay);
 }
 
 function withTimeout(promise, ms) {
@@ -1030,13 +1066,12 @@ function noteAudible(tab) {
     if (!prev) setTimeout(scheduleMediaBroadcast, BASIC_ROW_DELAY_MS + 20);
   } else if (prev && prev.audible) {
     audibleTabs.set(tab.id, { ...prev, audible: false, quietSince: Date.now() });
-    // Ровно по истечении паузы, а не на ближайшей плановой уборке.
-    setTimeout(() => sweepMedia(), AUDIBLE_GRACE_MS + 50);
   } else {
     return;
   }
   scheduleMediaBroadcast();
-  scheduleMediaSweep();
+  // Стихшая вкладка убирается ровно по истечении паузы.
+  scheduleMediaSweep(tab.audible ? undefined : AUDIBLE_GRACE_MS + 50);
 }
 
 browser.tabs.onRemoved.addListener(forgetMediaOfTab);

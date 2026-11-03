@@ -45,23 +45,6 @@ read -r -d '' CSS <<'CSS_END' || true
     display: none !important;
   }
 }
-/* Боковая панель без рамки: новая боковая панель Firefox кладёт панель
-   расширения в карточку с полями, скруглением, тенью и обводкой — из-за
-   этого плеер внизу не доставал до краёв. */
-#sidebar-box {
-  margin: 0 !important;
-  padding: 0 !important;
-  border: none !important;
-  --sidebar-box-start-start-radius: 0 !important;
-  --sidebar-box-start-end-radius: 0 !important;
-}
-
-#sidebar {
-  margin: 0 !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-  outline: none !important;
-}
 CSS_END
 
 read -r -d '' PREFS <<'PREFS_END' || true

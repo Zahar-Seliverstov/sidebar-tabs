@@ -62,7 +62,8 @@ function ensureTab(tabId) {
       state.otherTabs.set(tabId, tab);
       scheduleRender();
     },
-    () => {} // вкладка уже закрыта — фон сам уберёт её из списка
+    // Вкладка уже закрыта — фон сам уберёт её из списка.
+    () => fetchingTabs.delete(tabId)
   );
 }
 
@@ -150,11 +151,11 @@ function updatePlayerRow(el, s) {
     p.img.parentElement.classList.toggle("cover", !!cover);
   }
 
+  // classList, а не className: у строки есть и чужие классы (center —
+  // от барабана, dragging/drop-* — от перетаскивания).
   const muted = isMuted(tab);
-  let cls = "pr";
-  if (s.playing) cls += " playing";
-  if (muted) cls += " muted";
-  if (setIfChanged(el, "cls", cls)) el.className = cls;
+  if (setIfChanged(el, "playing", !!s.playing)) el.classList.toggle("playing", !!s.playing);
+  if (setIfChanged(el, "muted", muted)) el.classList.toggle("muted", muted);
 
   updatePluginButtons(p.plugins, s);
   updateVolumeControl(p.vol, s.tabId, false);
@@ -202,18 +203,30 @@ function renderPlayer() {
   syncWheel();
   updateDeck();
 
-  if (playerRows.some((s) => s.playing && s.position)) {
-    if (!playerTick) playerTick = setInterval(tickPlayer, PLAYER_TICK_MS);
+  updatePlayerTick();
+}
+
+// Прогресс тикает, только пока что-то играет и панель видна (свёрнутое
+// окно — тикать незачем; при показе позиция досчитается от времени).
+function updatePlayerTick() {
+  if (!document.hidden && playerRows.some((s) => s.playing && s.position)) {
+    if (!playerTick) {
+      playerTick = setInterval(tickPlayer, PLAYER_TICK_MS);
+      tickPlayer();
+    }
   } else {
     clearInterval(playerTick);
     playerTick = 0;
   }
 }
 
+document.addEventListener("visibilitychange", updatePlayerTick);
+
 function tickPlayer() {
   for (const s of playerRows) {
     const el = playerEls.get(sessionKey(s));
-    if (el && s.playing) updateRowProgress(el, s);
+    // Невидимые строки барабана и центральная (её прогресс — в пульте) не нужны.
+    if (el && s.playing && el.style.visibility !== "hidden" && !el.classList.contains("center")) updateRowProgress(el, s);
   }
   if (deckSession && deckSession.playing) updateDeckProgress(deckSession);
 }
@@ -414,7 +427,8 @@ function updateDeckProgress(s) {
   const b = formatTime(duration);
   if ($deckPos.textContent !== a) $deckPos.textContent = a;
   if ($deckDur.textContent !== b) $deckDur.textContent = b;
-  $deckBar.setAttribute("aria-valuetext", a + " из " + b);
+  const text = a + " из " + b;
+  if ($deckBar.getAttribute("aria-valuetext") !== text) $deckBar.setAttribute("aria-valuetext", text);
 }
 
 function skipBy(s, sec) {
@@ -748,7 +762,7 @@ function layoutWheel() {
 $playerList.addEventListener(
   "wheel",
   (e) => {
-    if (!wheelMode() || elementOf(e.target).closest(".pr.center .vexp")) return;
+    if (!wheelMode() || !e.deltaY || elementOf(e.target).closest(".pr.center .vexp")) return;
     e.preventDefault();
     // Колесо мыши — щелчок на деление; тачпад — накапливаем пиксели.
     if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || Math.abs(e.deltaY) >= 50) {

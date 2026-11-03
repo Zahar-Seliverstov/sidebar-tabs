@@ -72,6 +72,8 @@
     // её при запуске. null — не выбирали, скорость — как у сайта.
     rate: null,
     lastKey: "",
+    // Позиция и состояние из последней отправки (см. positionJumped).
+    sent: null,
     shown: false,
     wasPlaying: false,
     timer: 0,
@@ -187,6 +189,9 @@
 
   function applyRate(el) {
     if (M.rate === null) return;
+    // Короткие звуки (уведомления, клики) — на своей скорости. Длина ещё
+    // неизвестна (NaN) — применяем: это может быть следующий трек.
+    if (el.duration < MIN_DURATION_S) return;
     try {
       if (el.playbackRate !== M.rate) el.playbackRate = M.rate;
     } catch (e) {}
@@ -351,6 +356,21 @@
     }
   }
 
+  const POSITION_JUMP_S = 1.5;
+
+  // Разошлась ли позиция сайта с той, что панель досчитывает от последней
+  // отправки. Позицию настоящего плеера берём у него самого, а перемотку
+  // ловит событие seeked — проверка нужна для плееров на Web Audio.
+  function positionJumped() {
+    const sent = M.sent;
+    const p = M.position;
+    if (!sent || !p || !sent.position) return !!p !== !!(sent && sent.position);
+    if (mainElement()) return false;
+    const sp = sent.position;
+    const expected = sent.playing ? sp.position + ((Date.now() - sent.at) / 1000) * (sp.rate || 1) : sp.position;
+    return Math.abs(p.position - expected) > POSITION_JUMP_S;
+  }
+
   // force — отправить, даже если изменилась только позиция (перемотка).
   function schedule(force) {
     if (force) M.lastKey = "";
@@ -369,6 +389,7 @@
       // Пустое состояние нужно фону, только если до этого что-то было показано.
       if (!state && !M.shown) return;
       M.shown = !!state;
+      M.sent = state && { position: state.position, playing: state.playing, at: Date.now() };
       updateHeartbeat();
       send(state);
     }, SEND_DELAY_MS);
@@ -409,7 +430,10 @@
       } catch (e) {
         M.position = null;
       }
-      schedule(true);
+      // Многие сайты зовут setPositionState каждую секунду (а то и на каждый
+      // timeupdate). Позицию панель досчитывает сама — отправляем, только
+      // если она разошлась с ожидаемой (перемотка) или сменилась длина/скорость.
+      schedule(positionJumped());
       return result;
     }, window);
 
@@ -441,9 +465,11 @@
     }, window);
     // Плеер вне документа, запущенный до появления скрипта (скрипт внедрён
     // в уже открытую страницу), находим по чтению currentTime — плееры
-    // читают его постоянно, чтобы рисовать полосу прогресса.
+    // читают его постоянно, чтобы рисовать полосу прогресса. Только для
+    // позднего внедрения: иначе каждое чтение currentTime на любом сайте
+    // шло бы через нашу подмену, а play() и так ловит все плееры.
     const ct = Object.getOwnPropertyDescriptor(xproto, "currentTime");
-    Object.defineProperty(pproto, "currentTime", {
+    if (late) Object.defineProperty(pproto, "currentTime", {
       configurable: true,
       enumerable: true,
       get: exportFunction(function () {
@@ -468,10 +494,15 @@
     true
   );
 
+  // Скрипт громкости (background.js) ставит свои подмены play/currentTime
+  // поверх наших — через это он сообщает о плеерах и нам.
+  M.track = track;
+  M.late = late;
+
   // Скрипт внедрён в уже открытую страницу (после установки/обновления
   // расширения) — подхватываем плееры, что уже есть в документе.
-  for (const el of document.querySelectorAll("audio, video")) track(el);
   if (late) {
+    for (const el of document.querySelectorAll("audio, video")) track(el);
     restoreHandlers();
     schedule(true);
   }
@@ -480,6 +511,9 @@
   M.refresh = () => schedule();
 
   window.addEventListener("pagehide", () => {
+    // Отложенная отправка не должна воскресить строку уходящей страницы.
+    clearTimeout(M.timer);
+    M.timer = 0;
     if (M.shown) send(null);
     M.shown = false;
     M.lastKey = "";
